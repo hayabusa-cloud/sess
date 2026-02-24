@@ -48,14 +48,26 @@ func ExecError[E, R any](ep *Endpoint, protocol kont.Eff[R]) kont.Either[E, R] {
 	return kont.Handle(wrapped, h)
 }
 
+func rightUnwind[E, R any](_, _, _, current kont.Erased) (kont.Erased, kont.Frame) {
+	return kont.Erased(kont.Right[E, R](current.(R))), kont.ReturnFrame{}
+}
+
+// wrapRight wraps a protocol Expr[R] into Expr[Either[E, R]] using a pooled UnwindFrame.
+func wrapRight[E, R any](protocol kont.Expr[R]) kont.Expr[kont.Either[E, R]] {
+	if _, ok := protocol.Frame.(kont.ReturnFrame); ok {
+		return kont.ExprReturn(kont.Right[E, R](protocol.Value))
+	}
+	uf := kont.AcquireUnwindFrame()
+	uf.Unwind = rightUnwind[E, R]
+	return kont.Expr[kont.Either[E, R]]{Frame: kont.ChainFrames(protocol.Frame, uf)}
+}
+
 // ExecErrorExpr runs an Expr session protocol with error handling on a pre-created endpoint.
 // Returns Either[E, R] — Right on success, Left on Throw.
 // Blocks on iox.ErrWouldBlock via adaptive backoff, without spawning goroutines
 // or creating channels.
 func ExecErrorExpr[E, R any](ep *Endpoint, protocol kont.Expr[R]) kont.Either[E, R] {
-	wrapped := kont.ExprMap(protocol, func(r R) kont.Either[E, R] {
-		return kont.Right[E, R](r)
-	})
+	wrapped := wrapRight[E, R](protocol)
 	var errCtx kont.ErrorContext[E]
 	h := sessionErrorHandler[E, R]{ctx: &ep.ctx, errCtx: &errCtx}
 	return kont.HandleExpr(wrapped, h)
@@ -107,10 +119,7 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 // effect suspension. Returns (Either[E, R], nil) on completion or error,
 // or (zero, suspension) if pending.
 func StepError[E, R any](protocol kont.Expr[R]) (kont.Either[E, R], *kont.Suspension[kont.Either[E, R]]) {
-	wrapped := kont.ExprMap(protocol, func(r R) kont.Either[E, R] {
-		return kont.Right[E, R](r)
-	})
-	return kont.StepExpr(wrapped)
+	return kont.StepExpr(wrapRight[E, R](protocol))
 }
 
 // AdvanceError dispatches the suspended operation on the endpoint.
