@@ -20,6 +20,17 @@ func Loop[S, A any](initial S, step func(S) kont.Eff[kont.Either[S, A]]) kont.Ef
 	})
 }
 
+func exprLoopUnwind[S, A any](data, _, _, current kont.Erased) (kont.Erased, kont.Frame) {
+	step := data.(func(S) kont.Expr[kont.Either[S, A]])
+	e := current.(kont.Either[S, A])
+	if left, ok := e.GetLeft(); ok {
+		result := ExprLoop(left, step)
+		return kont.Erased(result.Value), result.Frame
+	}
+	right, _ := e.GetRight()
+	return kont.Erased(right), kont.ReturnFrame{}
+}
+
 // ExprLoop runs a recursive session protocol (Expr-world).
 // step returns Left(nextState) to continue or Right(result) to finish.
 // Fuses ExprBind inline to avoid the type-erasing wrapper closure.
@@ -32,17 +43,9 @@ func ExprLoop[S, A any](initial S, step func(S) kont.Expr[kont.Either[S, A]]) ko
 		right, _ := m.Value.GetRight()
 		return kont.ExprReturn(right)
 	}
-	bf := kont.AcquireBindFrame()
-	bf.F = func(a kont.Erased) kont.Expr[kont.Erased] {
-		e := a.(kont.Either[S, A])
-		if left, ok := e.GetLeft(); ok {
-			result := ExprLoop(left, step)
-			return kont.Expr[kont.Erased]{Value: kont.Erased(result.Value), Frame: result.Frame}
-		}
-		right, _ := e.GetRight()
-		return kont.Expr[kont.Erased]{Value: kont.Erased(right), Frame: kont.ReturnFrame{}}
-	}
-	bf.Next = kont.ReturnFrame{}
+	bf := kont.AcquireUnwindFrame()
+	bf.Data1 = step
+	bf.Unwind = exprLoopUnwind[S, A]
 	var zero A
 	return kont.Expr[A]{
 		Value: zero,
