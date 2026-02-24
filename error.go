@@ -35,10 +35,10 @@ func (h sessionErrorHandler[E, A]) Dispatch(op kont.Operation) (kont.Resumed, bo
 	panic("sess: unhandled effect in SessionErrorHandler")
 }
 
-// ExecError runs a session protocol with error handling on a pre-created endpoint.
+// ExecError runs a Cont-world session protocol with error handling on a pre-created endpoint.
 // Returns Either[E, R] — Right on success, Left on Throw.
-// Blocks on iox.ErrWouldBlock via adaptive backoff, without spawning goroutines
-// or creating channels.
+// Blocks on iox.ErrWouldBlock via adaptive backoff (iox.Backoff),
+// without spawning goroutines or creating channels.
 func ExecError[E, R any](ep *Endpoint, protocol kont.Eff[R]) kont.Either[E, R] {
 	wrapped := kont.Map[kont.Resumed, R, kont.Either[E, R]](protocol, func(r R) kont.Either[E, R] {
 		return kont.Right[E, R](r)
@@ -62,10 +62,10 @@ func wrapRight[E, R any](protocol kont.Expr[R]) kont.Expr[kont.Either[E, R]] {
 	return kont.Expr[kont.Either[E, R]]{Frame: kont.ChainFrames(protocol.Frame, uf)}
 }
 
-// ExecErrorExpr runs an Expr session protocol with error handling on a pre-created endpoint.
+// ExecErrorExpr runs an Expr-world session protocol with error handling on a pre-created endpoint.
 // Returns Either[E, R] — Right on success, Left on Throw.
-// Blocks on iox.ErrWouldBlock via adaptive backoff, without spawning goroutines
-// or creating channels.
+// Blocks on iox.ErrWouldBlock via adaptive backoff (iox.Backoff),
+// without spawning goroutines or creating channels.
 func ExecErrorExpr[E, R any](ep *Endpoint, protocol kont.Expr[R]) kont.Either[E, R] {
 	wrapped := wrapRight[E, R](protocol)
 	var errCtx kont.ErrorContext[E]
@@ -75,7 +75,7 @@ func ExecErrorExpr[E, R any](ep *Endpoint, protocol kont.Expr[R]) kont.Either[E,
 
 // RunError creates a session pair, runs both Cont-world protocols with error
 // handling, and returns both results as Either values. Interleaves execution
-// on the calling goroutine using adaptive backoff (iox.Backoff).
+// of both sides on the calling goroutine using adaptive backoff (iox.Backoff).
 // Does not spawn goroutines or create channels.
 func RunError[E, A, B any](a kont.Eff[A], b kont.Eff[B]) (kont.Either[E, A], kont.Either[E, B]) {
 	return RunErrorExpr[E](Reify(a), Reify(b))
@@ -83,8 +83,8 @@ func RunError[E, A, B any](a kont.Eff[A], b kont.Eff[B]) (kont.Either[E, A], kon
 
 // RunErrorExpr creates a session pair, runs both Expr-world protocols with
 // error handling, and returns both results as Either values. Interleaves
-// execution on the calling goroutine using adaptive backoff (iox.Backoff).
-// Does not spawn goroutines or create channels.
+// execution of both sides on the calling goroutine using adaptive backoff
+// (iox.Backoff). Does not spawn goroutines or create channels.
 func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A], kont.Either[E, B]) {
 	epA, epB := New()
 	resultA, suspA := StepError[E, A](a)

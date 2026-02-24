@@ -55,7 +55,7 @@ func ExprRecvBind[T, B any](f func(T) kont.Expr[B]) kont.Expr[B] {
 }
 
 // ExprCloseDone closes the session and returns a.
-// Fuses ExprPerform(Close{}) + ExprReturn.
+// Fuses ExprPerform(Close{}) + ExprThen + ExprReturn.
 func ExprCloseDone[A any](a A) kont.Expr[A] {
 	tf := kont.AcquireThenFrame()
 	tf.Second = kont.Expr[kont.Erased]{Value: kont.Erased(a), Frame: exprReturnFrame}

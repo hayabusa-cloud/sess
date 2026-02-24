@@ -21,7 +21,7 @@ func RecvBind[T, B any](f func(T) kont.Eff[B]) kont.Eff[B] {
 }
 
 // CloseDone closes the session and returns a.
-// Fuses Perform(Close{}) + Pure.
+// Fuses Perform(Close{}) + Then + Pure.
 func CloseDone[A any](a A) kont.Eff[A] {
 	return kont.Then(kont.Perform(Close{}), kont.Pure(a))
 }
