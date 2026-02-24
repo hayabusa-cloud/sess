@@ -435,6 +435,21 @@ func TestExecErrorCatchSuccess(t *testing.T) {
 	}
 }
 
+func TestStepErrorPureReturn(t *testing.T) {
+	// wrapRight ReturnFrame fast path: pure value with no effects
+	result, susp := sess.StepError[string, int](kont.ExprReturn(42))
+	if susp != nil {
+		t.Fatal("expected immediate completion, got suspension")
+	}
+	if !result.IsRight() {
+		t.Fatalf("expected Right, got Left")
+	}
+	rv, _ := result.GetRight()
+	if rv != 42 {
+		t.Fatalf("got %d, want 42", rv)
+	}
+}
+
 func TestAdvanceErrorCatchStepping(t *testing.T) {
 	// Stepping through Catch that succeeds — non-throw error dispatch in AdvanceError
 	body := kont.Pure[string]("ok")
