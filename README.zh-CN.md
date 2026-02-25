@@ -13,9 +13,9 @@
 
 `sess` 提供由六种操作组成的类型化双向协议，每种操作作为代数效果在无锁端点对上分发。
 
-- 两种 API 风格：Cont（基于闭包）和 Expr（基于帧、摊销零分配）
-- 步进：逐个求值效果，便于 proactor 和事件循环集成
-- 非阻塞：当操作无法立即完成时，返回 `iox.ErrWouldBlock`
+- **双世界 API**：Cont（基于闭包）和 Expr（基于帧，零分配热路径）
+- **步进**：逐个求值效果，便于 proactor 和事件循环集成
+- **iox 非阻塞代数**：强制执行严格的进度模型，操作在计算边界处原生生成 `iox.ErrWouldBlock`，允许 proactor 事件循环（例如 io_uring）无缝复用执行，且不会阻塞系统线程
 
 ## 安装
 
@@ -84,13 +84,12 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 ep, _ := sess.New()
 protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
 _, susp := sess.Step[struct{}](protocol)
-for susp != nil {
-    var err error
-    _, susp, err = sess.Advance(ep, susp)
-    if err != nil {
-        continue // iox.ErrWouldBlock 时重试
-    }
+// In a proactor event loop (e.g., io_uring), yield on boundary:
+_, nextSusp, err := sess.Advance(ep, susp)
+if err != nil {
+    return susp // yield to event loop, reschedule when ready
 }
+susp = nextSusp
 ```
 
 ### 错误处理

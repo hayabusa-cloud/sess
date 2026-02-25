@@ -13,9 +13,9 @@
 
 `sess` は6つの操作から構成される型付き双方向プロトコルを提供します。各操作はロックフリーなエンドポイントペア上で代数的エフェクトとしてディスパッチされます。
 
-- 2つの API スタイル：Cont（クロージャベース）と Expr（フレームベース、償却ゼロアロケーション）
-- ステッピング：エフェクトを一つずつ評価し、proactor やイベントループと統合可能
-- ノンブロッキング：操作が即座に完了できない場合、`iox.ErrWouldBlock` を返す
+- **デュアルワールドAPI**：Cont（クロージャベース）と Expr（フレームベース、ゼロアロケーションホットパス）
+- **ステッピング**：エフェクトを一つずつ評価し、proactor やイベントループと統合可能
+- **iox ノンブロッキング代数**：厳密な進行モデルを強制し、操作は計算境界でネイティブに `iox.ErrWouldBlock` を生成し、プロアクタのイベントループ (例: io_uring) がシステムスレッドをブロックすることなく実行をシームレスに多重化することを可能にする
 
 ## インストール
 
@@ -84,13 +84,12 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 ep, _ := sess.New()
 protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
 _, susp := sess.Step[struct{}](protocol)
-for susp != nil {
-    var err error
-    _, susp, err = sess.Advance(ep, susp)
-    if err != nil {
-        continue // iox.ErrWouldBlock でリトライ
-    }
+// In a proactor event loop (e.g., io_uring), yield on boundary:
+_, nextSusp, err := sess.Advance(ep, susp)
+if err != nil {
+    return susp // yield to event loop, reschedule when ready
 }
+susp = nextSusp
 ```
 
 ### エラー処理

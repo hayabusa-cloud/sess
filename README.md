@@ -13,9 +13,9 @@ Session-typed communication protocols via algebraic effects on [kont](https://co
 
 `sess` provides typed, bidirectional protocols composed of six operations, each dispatched as an algebraic effect on a lock-free endpoint pair.
 
-- Two API styles: Cont (closure-based) and Expr (frame-based, amortized zero-allocation)
-- Stepping: evaluate effects one at a time for proactor and event-loop integration
-- Non-blocking: operations return `iox.ErrWouldBlock` when they cannot complete immediately
+- **Dual-world API**: Cont (closure-based) and Expr (frame-based, zero-allocation hot paths)
+- **Stepping**: Evaluate effects one at a time for proactor and event-loop integration
+- **iox Non-blocking Algebra**: Enforces a strict progress model where operations natively yield `iox.ErrWouldBlock` at computational boundaries, allowing proactor event loops (e.g., io_uring) to seamlessly multiplex execution without thread-blocking
 
 ## Installation
 
@@ -80,17 +80,18 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 
 ### Stepping
 
+For real proactor event loops (e.g., `io_uring`), `sess` provides a `Step` and `Advance` mechanism. Unlike the `Run` and `Exec` helpers—which use `iox.Backoff` to synchronously wait for progress—the stepping API is the true non-blocking algebra that explicitly yields `iox.ErrWouldBlock` to the caller, allowing the event loop to seamlessly multiplex execution without thread-blocking.
+
 ```go
 ep, _ := sess.New()
 protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
 _, susp := sess.Step[struct{}](protocol)
-for susp != nil {
-    var err error
-    _, susp, err = sess.Advance(ep, susp)
-    if err != nil {
-        continue // retry on iox.ErrWouldBlock
-    }
+// In a proactor event loop (e.g., io_uring), yield on boundary:
+_, nextSusp, err := sess.Advance(ep, susp)
+if err != nil {
+    return susp // yield to event loop, reschedule when ready
 }
+susp = nextSusp
 ```
 
 ### Error Handling

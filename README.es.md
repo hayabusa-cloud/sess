@@ -13,9 +13,9 @@ Protocolos de comunicacion con tipos de sesion via efectos algebraicos sobre [ko
 
 `sess` proporciona protocolos bidireccionales tipados compuestos por seis operaciones, cada una despachada como un efecto algebraico sobre un par de endpoints sin bloqueo.
 
-- Dos estilos de API: Cont (basado en closures) y Expr (basado en marcos, cero asignaciones amortizadas)
-- Paso a paso: evalua un efecto a la vez para integracion con proactor y bucle de eventos
-- No bloqueante: las operaciones devuelven `iox.ErrWouldBlock` cuando no pueden completarse inmediatamente
+- **API de mundo dual**: Cont (basado en closures) y Expr (basado en marcos, rutas criticas con cero asignaciones)
+- **Paso a paso**: Evalua los efectos uno a la vez para la integracion con proactor y bucle de eventos
+- **Algebra no bloqueante iox**: Impone un modelo de progreso estricto donde las operaciones generan nativamente `iox.ErrWouldBlock` en las fronteras computacionales, permitiendo a los bucles de eventos proactor (ej., io_uring) multiplexar la ejecución sin bloquear los hilos del sistema
 
 ## Instalacion
 
@@ -84,13 +84,12 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 ep, _ := sess.New()
 protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
 _, susp := sess.Step[struct{}](protocol)
-for susp != nil {
-    var err error
-    _, susp, err = sess.Advance(ep, susp)
-    if err != nil {
-        continue // reintentar en iox.ErrWouldBlock
-    }
+// In a proactor event loop (e.g., io_uring), yield on boundary:
+_, nextSusp, err := sess.Advance(ep, susp)
+if err != nil {
+    return susp // yield to event loop, reschedule when ready
 }
+susp = nextSusp
 ```
 
 ### Manejo de Errores
