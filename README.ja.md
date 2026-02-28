@@ -11,11 +11,11 @@
 
 ## 概要
 
-`sess` は6つの操作から構成される型付き双方向プロトコルを提供します。各操作はロックフリーなエンドポイントペア上で代数的エフェクトとしてディスパッチされます。
+セッション型は通信プロトコルの各ステップに型を割り当てます。型システムは、両方のエンドポイントが同じプロトコル構造に従うことを静的に保証します：一方が送信すれば他方は受信し、一方が分岐を選択すれば他方はそれを提供します。プロトコル違反はコンパイル時に検出されます。
 
-- **デュアルワールドAPI**：Cont（クロージャベース）と Expr（フレームベース、ゼロアロケーションホットパス）
-- **ステッピング**：エフェクトを一つずつ評価し、proactor やイベントループと統合可能
-- **iox ノンブロッキング代数**：厳密な進行モデルを強制し、操作は計算境界でネイティブに `iox.ErrWouldBlock` を生成し、プロアクタのイベントループ (例: io_uring) がシステムスレッドをブロックすることなく実行をシームレスに多重化することを可能にする
+`sess` はセッション型を [kont](https://code.hybscloud.com/kont) エフェクトシステムで評価される代数的エフェクトとしてエンコードします。各プロトコルステップ — 送信、受信、選択、提供、クローズ — はトランスポートが操作を完了するまで計算を中断するエフェクトです。トランスポートは計算境界で `iox.ErrWouldBlock` を返し、proactor イベントループ（例：`io_uring`）がスレッドをブロックせずに実行を多重化できるようにします。
+
+2つの等価な API：Cont（クロージャベース、直接的な合成）と Expr（フレームベース、ホットパス向けの償却ゼロアロケーション）。
 
 ## インストール
 
@@ -27,18 +27,17 @@ Go 1.26+ が必要です。
 
 ## セッション操作
 
-| 操作 | エフェクト | サスペンド？ |
-|------|-----------|-------------|
-| `Send[T]` | 値を送信 | `iox.ErrWouldBlock` |
-| `Recv[T]` | 値を受信 | `iox.ErrWouldBlock` |
-| `Close` | セッションを終了 | しない |
-| `SelectL` | 左分岐を選択 | `iox.ErrWouldBlock` |
-| `SelectR` | 右分岐を選択 | `iox.ErrWouldBlock` |
-| `Offer` | ピアの選択を待つ | `iox.ErrWouldBlock` |
+各操作には双対があります。一方のエンドポイントが操作を行うと、他方はその双対操作を行う必要があります。
 
-エンドポイントの委譲は送信で、受け入れは受信で行います。
+| 操作 | 双対 | サスペンド？ |
+|------|------|-------------|
+| `Send[T]` — 値を送信 | `Recv[T]` — 値を受信 | `iox.ErrWouldBlock` |
+| `SelectL` / `SelectR` — 分岐を選択 | `Offer` — ピアの選択に従う | `iox.ErrWouldBlock` |
+| `Close` — セッションを終了 | `Close` | しない |
 
 ## 使い方
+
+プロトタイピングおよび検証には `Run` を使用します。外部管理されるエンドポイントには `Exec` を使用します。ステッピング制御が必要な場合、またはホットパスにおけるアロケーションのオーバーヘッドを最小化する場合は、Expr API（`RunExpr`/`ExecExpr`）を使用します。
 
 ### 送受信
 
@@ -53,6 +52,8 @@ a, b := sess.Run(client, server) // "ok", "got 42"
 Expr 版：`ExprSendThen`、`ExprRecvBind`、`ExprCloseDone`、`RunExpr`。
 
 ### 分岐
+
+一方が分岐を選択し、デュアル側が両方の分岐を提供して選択に従います。
 
 ```go
 client := sess.SelectLThen(sess.SendThen(1, sess.CloseDone("left")))
@@ -69,6 +70,8 @@ a, b := sess.Run(client, server)
 
 ### 再帰プロトコル
 
+繰り返すプロトコルは `Loop` と `Either` を使用します：`Left` はループを継続し、`Right` は終了します。
+
 ```go
 counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
     if i >= 3 {
@@ -78,7 +81,20 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 })
 ```
 
+### 委譲
+
+エンドポイントを送信して第三者に転送し、受信して委譲を受け入れます。
+
+```go
+delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
+acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
+    return sess.CloseDone("accepted")
+})
+```
+
 ### ステッピング
+
+proactor イベントループ（例：`io_uring`）向けに、`Step` と `Advance` は一度に1つのエフェクトを評価します。`Run` や `Exec` — 同期的に進行を待つ — とは異なり、ステッピング API は `iox.ErrWouldBlock` を呼び出し元に返し、イベントループが再スケジュールできるようにします。
 
 ```go
 ep, _ := sess.New()
@@ -94,6 +110,8 @@ susp = nextSusp
 
 ### エラー処理
 
+セッションプロトコルをエラーエフェクトと合成します。`Throw` はプロトコルを即座に短絡し、保留中のサスペンションを破棄します。
+
 ```go
 clientResult, serverResult := sess.RunError[string, string, string](client, server)
 // Either[string, string]: 成功時は Right、Throw 時は Left
@@ -101,7 +119,7 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 
 ## 実行モデル
 
-| 関数 | ユースケース |
+| 関数 | 説明 |
 |------|-------------|
 | `Run` / `RunExpr` | 両側を1つのゴルーチンで実行 — 内部でエンドポイントペアを生成 |
 | `Exec` / `ExecExpr` | 作成済みエンドポイント上で片側を実行 |
@@ -120,6 +138,15 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 | ステッピング | | `Step`, `Advance`, `StepError`, `AdvanceError` |
 | ブリッジ | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | トランスポート | `New` → `(*Endpoint, *Endpoint)` | |
+
+## References
+
+- Kohei Honda. "Types for Dyadic Interaction." In *CONCUR 1993* (LNCS 715), pp. 509-523. Springer, 1993. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, Makoto Kubo. "Language Primitives and Type Discipline for Structured Communication-Based Programming." In *ESOP 1998* (LNCS 1381), pp. 122-138. Springer, 1998. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. "Propositions as Sessions." *Journal of Functional Programming* 24(2-3):384-418, 2014. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard, Nobuko Yoshida. "Effects as Sessions, Sessions as Effects." In *POPL 2016*, pp. 568-581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley, J. Garrett Morris. "Lightweight Functional Session Types." In *Behavioural Types: From Theory to Tools*, pp. 265-286, 2017 (first published year; DOI metadata date is 2022-09-01). https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, Sara Decova. "Exceptional Asynchronous Session Types: Session Types without Tiers." *Proc. ACM Program. Lang.* 3(POPL):28:1-28:29, 2019. https://doi.org/10.1145/3290341
 
 ## 依存関係
 

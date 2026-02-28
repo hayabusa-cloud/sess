@@ -11,11 +11,11 @@
 
 ## 概述
 
-`sess` 提供由六种操作组成的类型化双向协议，每种操作作为代数效果在无锁端点对上分发。
+会话类型为通信协议的每个步骤分配一个类型。类型系统静态保证两个端点遵循相同的协议结构：如果一方发送，另一方接收；如果一方选择分支，另一方提供。协议违规在编译时被捕获。
 
-- **双世界 API**：Cont（基于闭包）和 Expr（基于帧，零分配热路径）
-- **步进**：逐个求值效果，便于 proactor 和事件循环集成
-- **iox 非阻塞代数**：强制执行严格的进度模型，操作在计算边界处原生生成 `iox.ErrWouldBlock`，允许 proactor 事件循环（例如 io_uring）无缝复用执行，且不会阻塞系统线程
+`sess` 将会话类型编码为由 [kont](https://code.hybscloud.com/kont) 效果系统求值的代数效果。每个协议步骤 — 发送、接收、选择、提供、关闭 — 是一个效果，它会挂起计算直到传输层完成操作。传输层在计算边界返回 `iox.ErrWouldBlock`，允许 proactor 事件循环（如 `io_uring`）在不阻塞线程的情况下多路复用执行。
+
+两种等价的 API：Cont（基于闭包，直接组合）和 Expr（基于帧，热路径的摊销零分配）。
 
 ## 安装
 
@@ -27,18 +27,17 @@ go get code.hybscloud.com/sess
 
 ## 会话操作
 
-| 操作 | 效果 | 挂起？ |
-|------|------|--------|
-| `Send[T]` | 发送一个值 | `iox.ErrWouldBlock` |
-| `Recv[T]` | 接收一个值 | `iox.ErrWouldBlock` |
-| `Close` | 结束会话 | 从不 |
-| `SelectL` | 选择左分支 | `iox.ErrWouldBlock` |
-| `SelectR` | 选择右分支 | `iox.ErrWouldBlock` |
-| `Offer` | 等待对端选择 | `iox.ErrWouldBlock` |
+每个操作都有对偶。当一端执行某个操作时，另一端必须执行其对偶操作。
 
-通过发送端点进行委托，通过接收端点接受委托。
+| 操作 | 对偶 | 挂起？ |
+|------|------|--------|
+| `Send[T]` — 发送一个值 | `Recv[T]` — 接收一个值 | `iox.ErrWouldBlock` |
+| `SelectL` / `SelectR` — 选择分支 | `Offer` — 跟随对端选择 | `iox.ErrWouldBlock` |
+| `Close` — 结束会话 | `Close` | 从不 |
 
 ## 用法
+
+使用 `Run` 进行协议原型设计与验证。对于外部管理的端点，使用 `Exec`。当需要步进控制或在热路径上最小化分配开销时，使用 Expr API（`RunExpr`/`ExecExpr`）。
 
 ### 收发
 
@@ -53,6 +52,8 @@ a, b := sess.Run(client, server) // "ok", "got 42"
 Expr 版本：`ExprSendThen`、`ExprRecvBind`、`ExprCloseDone`、`RunExpr`。
 
 ### 分支
+
+一方选择分支；对偶方提供两个分支并跟随选择。
 
 ```go
 client := sess.SelectLThen(sess.SendThen(1, sess.CloseDone("left")))
@@ -69,6 +70,8 @@ a, b := sess.Run(client, server)
 
 ### 递归协议
 
+重复的协议使用 `Loop` 和 `Either`：`Left` 继续循环，`Right` 终止。
+
 ```go
 counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
     if i >= 3 {
@@ -78,7 +81,20 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 })
 ```
 
+### 委托
+
+通过发送端点将其转移给第三方；通过接收来接受委托。
+
+```go
+delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
+acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
+    return sess.CloseDone("accepted")
+})
+```
+
 ### 步进
+
+对于 proactor 事件循环（如 `io_uring`），`Step` 和 `Advance` 一次求值一个效果。与 `Run` 和 `Exec` — 同步等待进展 — 不同，步进 API 将 `iox.ErrWouldBlock` 返回给调用者，让事件循环重新调度。
 
 ```go
 ep, _ := sess.New()
@@ -93,6 +109,8 @@ susp = nextSusp
 ```
 
 ### 错误处理
+
+将会话协议与错误效果组合。`Throw` 立即短路协议并丢弃挂起的暂停。
 
 ```go
 clientResult, serverResult := sess.RunError[string, string, string](client, server)
@@ -120,6 +138,15 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 | 步进 | | `Step`, `Advance`, `StepError`, `AdvanceError` |
 | 桥接 | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | 传输 | `New` → `(*Endpoint, *Endpoint)` | |
+
+## References
+
+- Kohei Honda. "Types for Dyadic Interaction." In *CONCUR 1993* (LNCS 715), pp. 509-523. Springer, 1993. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, Makoto Kubo. "Language Primitives and Type Discipline for Structured Communication-Based Programming." In *ESOP 1998* (LNCS 1381), pp. 122-138. Springer, 1998. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. "Propositions as Sessions." *Journal of Functional Programming* 24(2-3):384-418, 2014. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard, Nobuko Yoshida. "Effects as Sessions, Sessions as Effects." In *POPL 2016*, pp. 568-581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley, J. Garrett Morris. "Lightweight Functional Session Types." In *Behavioural Types: From Theory to Tools*, pp. 265-286, 2017 (first published year; DOI metadata date is 2022-09-01). https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, Sara Decova. "Exceptional Asynchronous Session Types: Session Types without Tiers." *Proc. ACM Program. Lang.* 3(POPL):28:1-28:29, 2019. https://doi.org/10.1145/3290341
 
 ## 依赖
 

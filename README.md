@@ -11,11 +11,11 @@ Session-typed communication protocols via algebraic effects on [kont](https://co
 
 ## Overview
 
-`sess` provides typed, bidirectional protocols composed of six operations, each dispatched as an algebraic effect on a lock-free endpoint pair.
+Session types assign a type to each step of a communication protocol. The type system statically guarantees that both endpoints follow the same protocol structure: if one side sends, the other receives; if one selects a branch, the other offers. Protocol violations are caught at compile time.
 
-- **Dual-world API**: Cont (closure-based) and Expr (frame-based, zero-allocation hot paths)
-- **Stepping**: Evaluate effects one at a time for proactor and event-loop integration
-- **iox Non-blocking Algebra**: Enforces a strict progress model where operations natively yield `iox.ErrWouldBlock` at computational boundaries, allowing proactor event loops (e.g., io_uring) to seamlessly multiplex execution without thread-blocking
+`sess` encodes session types as algebraic effects evaluated by the [kont](https://code.hybscloud.com/kont) effect system. Each protocol step — send, receive, select, offer, close — is an effect that suspends the computation until the transport completes the operation. The transport returns `iox.ErrWouldBlock` at computational boundaries, allowing proactor event loops (e.g., `io_uring`) to multiplex execution without thread-blocking.
+
+Two equivalent APIs: Cont (closure-based, straightforward composition) and Expr (frame-based, amortized zero-allocation for hot paths).
 
 ## Installation
 
@@ -27,20 +27,21 @@ Requires Go 1.26+.
 
 ## Session Operations
 
-| Operation | Effect | Suspends? |
-|-----------|--------|-----------|
-| `Send[T]` | Send a value | `iox.ErrWouldBlock` |
-| `Recv[T]` | Receive a value | `iox.ErrWouldBlock` |
-| `Close` | End the session | Never |
-| `SelectL` | Choose the left branch | `iox.ErrWouldBlock` |
-| `SelectR` | Choose the right branch | `iox.ErrWouldBlock` |
-| `Offer` | Wait for the peer's choice | `iox.ErrWouldBlock` |
+Each operation has a dual. When one endpoint performs an operation, the other must perform its dual.
 
-Delegate an endpoint by sending it; accept delegation by receiving it.
+| Operation | Dual | Suspends? |
+|-----------|------|-----------|
+| `Send[T]` — send a value | `Recv[T]` — receive a value | `iox.ErrWouldBlock` |
+| `SelectL` / `SelectR` — choose a branch | `Offer` — follow the peer's choice | `iox.ErrWouldBlock` |
+| `Close` — end the session | `Close` | Never |
 
 ## Usage
 
+Use `Run` for protocol prototyping and validation. Use `Exec` for externally managed endpoints. Use the Expr API (`RunExpr`/`ExecExpr`) for stepping control or to minimize allocation overhead on hot paths.
+
 ### Send and Receive
+
+One side sends a value; the dual side receives it.
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
@@ -53,6 +54,8 @@ a, b := sess.Run(client, server) // "ok", "got 42"
 Expr equivalent: `ExprSendThen`, `ExprRecvBind`, `ExprCloseDone`, `RunExpr`.
 
 ### Branching
+
+One side selects a branch; the dual side offers both branches and follows the selection.
 
 ```go
 client := sess.SelectLThen(sess.SendThen(1, sess.CloseDone("left")))
@@ -69,6 +72,8 @@ a, b := sess.Run(client, server)
 
 ### Recursive Protocols
 
+Protocols that repeat use `Loop` with `Either`: `Left` continues the loop, `Right` terminates.
+
 ```go
 counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
     if i >= 3 {
@@ -78,9 +83,20 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 })
 ```
 
+### Delegation
+
+Transfer an endpoint to a third party by sending it; accept delegation by receiving it.
+
+```go
+delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
+acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
+    return sess.CloseDone("accepted")
+})
+```
+
 ### Stepping
 
-For real proactor event loops (e.g., `io_uring`), `sess` provides a `Step` and `Advance` mechanism. Unlike the `Run` and `Exec` helpers—which use `iox.Backoff` to synchronously wait for progress—the stepping API is the true non-blocking algebra that explicitly yields `iox.ErrWouldBlock` to the caller, allowing the event loop to seamlessly multiplex execution without thread-blocking.
+For proactor event loops (e.g., `io_uring`), `Step` and `Advance` evaluate one effect at a time. Unlike `Run` and `Exec` — which synchronously wait for progress — the stepping API yields `iox.ErrWouldBlock` to the caller, letting the event loop reschedule.
 
 ```go
 ep, _ := sess.New()
@@ -96,6 +112,8 @@ susp = nextSusp
 
 ### Error Handling
 
+Compose session protocols with error effects. `Throw` eagerly short-circuits the protocol and discards the pending suspension.
+
 ```go
 clientResult, serverResult := sess.RunError[string, string, string](client, server)
 // Either[string, string]: Right on success, Left on Throw
@@ -103,11 +121,11 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 
 ## Execution Model
 
-| Function | Use case |
-|----------|----------|
-| `Run` / `RunExpr` | Run both sides on one goroutine — creates an endpoint pair internally |
+| Function | Description |
+|----------|-------------|
+| `Run` / `RunExpr` | Run both sides on one goroutine, creating an endpoint pair internally |
 | `Exec` / `ExecExpr` | Run one side on a pre-created endpoint |
-| `Step` + `Advance` | Evaluate one effect at a time, for external event loops |
+| `Step` + `Advance` | Evaluate one effect at a time for external event loops |
 
 **Cont vs Expr**: Cont is closure-based and straightforward to compose. Expr is frame-based with amortized zero-allocation, suited for hot paths.
 
@@ -122,6 +140,15 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 | Stepping | | `Step`, `Advance`, `StepError`, `AdvanceError` |
 | Bridge | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | Transport | `New` → `(*Endpoint, *Endpoint)` | |
+
+## References
+
+- Kohei Honda. "Types for Dyadic Interaction." In *CONCUR 1993* (LNCS 715), pp. 509-523. Springer, 1993. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, Makoto Kubo. "Language Primitives and Type Discipline for Structured Communication-Based Programming." In *ESOP 1998* (LNCS 1381), pp. 122-138. Springer, 1998. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. "Propositions as Sessions." *Journal of Functional Programming* 24(2-3):384-418, 2014. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard, Nobuko Yoshida. "Effects as Sessions, Sessions as Effects." In *POPL 2016*, pp. 568-581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley, J. Garrett Morris. "Lightweight Functional Session Types." In *Behavioural Types: From Theory to Tools*, pp. 265-286, 2017 (first published year; DOI metadata date is 2022-09-01). https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, Sara Decova. "Exceptional Asynchronous Session Types: Session Types without Tiers." *Proc. ACM Program. Lang.* 3(POPL):28:1-28:29, 2019. https://doi.org/10.1145/3290341
 
 ## Dependencies
 
