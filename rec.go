@@ -60,9 +60,6 @@ func ExprLoop[S, A any](initial S, step func(S) kont.Expr[kont.Either[S, A]]) ko
 	value, frame := exprLoopIter[S, A](initial, step)
 	var zero A
 	if _, ok := frame.(kont.ReturnFrame); ok {
-		if value == nil {
-			return kont.ExprReturn(zero)
-		}
 		return kont.ExprReturn(value.(A))
 	}
 	return kont.Expr[A]{
