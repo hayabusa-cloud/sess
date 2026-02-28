@@ -112,6 +112,24 @@ func TestLoopImmediateTermination(t *testing.T) {
 	}
 }
 
+func TestLoopDeepPureStackSafe(t *testing.T) {
+	skipRace(t)
+	const depth = 5000000
+	protocol := sess.Loop(depth, func(i int) kont.Eff[kont.Either[int, int]] {
+		if i == 0 {
+			return kont.Pure(kont.Right[int, int](1))
+		}
+		return kont.Pure(kont.Left[int, int](i - 1))
+	})
+	result := kont.Handle(protocol, kont.HandleFunc[int](func(op kont.Operation) (kont.Resumed, bool) {
+		t.Fatalf("unexpected effect in pure loop: %T", op)
+		return nil, false
+	}))
+	if result != 1 {
+		t.Fatalf("got %d, want 1", result)
+	}
+}
+
 func TestExprLoopCounter(t *testing.T) {
 	skipRace(t)
 	// Expr-world counter: send 0..4 via SelectR, then SelectL to close
@@ -175,6 +193,139 @@ func TestExprLoopPureStep(t *testing.T) {
 	}))
 	if result != "done:5" {
 		t.Fatalf("got %q, want %q", result, "done:5")
+	}
+}
+
+func TestExprLoopDeepPureStackSafe(t *testing.T) {
+	const depth = 5000000
+	result := kont.RunPure(sess.ExprLoop(depth, func(i int) kont.Expr[kont.Either[int, int]] {
+		if i == 0 {
+			return kont.ExprReturn(kont.Right[int, int](1))
+		}
+		return kont.ExprReturn(kont.Left[int, int](i - 1))
+	}))
+	if result != 1 {
+		t.Fatalf("got %d, want 1", result)
+	}
+}
+
+func TestLoopUltraDeepMixedEffectPureStackSafe(t *testing.T) {
+	skipRace(t)
+	const depth = 5000000
+	const stride = 4096
+
+	maxK := int64(depth / stride)
+	expectedSum := int64(stride) * maxK * (maxK + 1) / 2
+
+	client := sess.Loop(depth, func(i int) kont.Eff[kont.Either[int, string]] {
+		if i == 0 {
+			return sess.CloseDone(kont.Right[int, string]("done"))
+		}
+		if i%stride == 0 {
+			return sess.SendThen(int64(i), kont.Pure(kont.Left[int, string](i-1)))
+		}
+		return kont.Pure(kont.Left[int, string](i - 1))
+	})
+
+	server := sess.Loop(struct {
+		seen int
+		sum  int64
+	}{}, func(state struct {
+		seen int
+		sum  int64
+	}) kont.Eff[kont.Either[struct {
+		seen int
+		sum  int64
+	}, int64]] {
+		if state.seen == int(maxK) {
+			return sess.CloseDone(kont.Right[struct {
+				seen int
+				sum  int64
+			}, int64](state.sum))
+		}
+		return sess.RecvBind(func(n int64) kont.Eff[kont.Either[struct {
+			seen int
+			sum  int64
+		}, int64]] {
+			return kont.Pure(kont.Left[struct {
+				seen int
+				sum  int64
+			}, int64](struct {
+				seen int
+				sum  int64
+			}{
+				seen: state.seen + 1,
+				sum:  state.sum + n,
+			}))
+		})
+	})
+
+	clientResult, serverResult := sess.Run[string, int64](client, server)
+	if clientResult != "done" {
+		t.Fatalf("client got %q, want %q", clientResult, "done")
+	}
+	if serverResult != expectedSum {
+		t.Fatalf("sum got %d, want %d", serverResult, expectedSum)
+	}
+}
+
+func TestExprLoopUltraDeepMixedEffectPureStackSafe(t *testing.T) {
+	skipRace(t)
+	const depth = 5000000
+	const stride = 4096
+
+	maxK := int64(depth / stride)
+	expectedSum := int64(stride) * maxK * (maxK + 1) / 2
+
+	client := sess.ExprLoop(depth, func(i int) kont.Expr[kont.Either[int, string]] {
+		if i == 0 {
+			return sess.ExprCloseDone(kont.Right[int, string]("done"))
+		}
+		if i%stride == 0 {
+			return sess.ExprSendThen(int64(i), kont.ExprReturn(kont.Left[int, string](i-1)))
+		}
+		return kont.ExprReturn(kont.Left[int, string](i - 1))
+	})
+
+	server := sess.ExprLoop(struct {
+		seen int
+		sum  int64
+	}{}, func(state struct {
+		seen int
+		sum  int64
+	}) kont.Expr[kont.Either[struct {
+		seen int
+		sum  int64
+	}, int64]] {
+		if state.seen == int(maxK) {
+			return sess.ExprCloseDone(kont.Right[struct {
+				seen int
+				sum  int64
+			}, int64](state.sum))
+		}
+		return sess.ExprRecvBind(func(n int64) kont.Expr[kont.Either[struct {
+			seen int
+			sum  int64
+		}, int64]] {
+			return kont.ExprReturn(kont.Left[struct {
+				seen int
+				sum  int64
+			}, int64](struct {
+				seen int
+				sum  int64
+			}{
+				seen: state.seen + 1,
+				sum:  state.sum + n,
+			}))
+		})
+	})
+
+	clientResult, serverResult := sess.RunExpr[string, int64](client, server)
+	if clientResult != "done" {
+		t.Fatalf("client got %q, want %q", clientResult, "done")
+	}
+	if serverResult != expectedSum {
+		t.Fatalf("sum got %d, want %d", serverResult, expectedSum)
 	}
 }
 
