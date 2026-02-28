@@ -11,7 +11,7 @@ Protocoles de communication a types de session via effets algebriques sur [kont]
 
 ## Presentation
 
-Les types de session assignent un type a chaque etape d'un protocole de communication. Le systeme de types garantit statiquement que les deux endpoints suivent la meme structure de protocole : si un cote envoie, l'autre recoit ; si l'un selectionne une branche, l'autre l'offre. Les violations de protocole sont detectees a la compilation.
+Les types de session assignent un type a chaque etape d'un protocole de communication. Chaque operation — envoyer, recevoir, selectionner, offrir, fermer — est individuellement bien typee via les generiques de Go, et la composition de protocoles au sein d'un meme endpoint est sure en types. La dualite (correspondance des operations entre endpoints) est une responsabilite du programmeur : le programmeur ecrit des protocoles duaux, et les incoherences se manifestent a l'execution sous forme d'echecs d'assertion de type ou de deadlocks.
 
 `sess` encode les types de session comme des effets algebriques evalues par le systeme d'effets [kont](https://code.hybscloud.com/kont). Chaque etape du protocole — envoyer, recevoir, selectionner, offrir, fermer — est un effet qui suspend le calcul jusqu'a ce que le transport complete l'operation. Le transport retourne `iox.ErrWouldBlock` aux frontieres computationnelles, permettant aux boucles d'evenements proactor (ex., `io_uring`) de multiplexer l'execution sans bloquer les threads.
 

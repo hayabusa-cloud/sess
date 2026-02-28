@@ -11,7 +11,7 @@ Session-typed communication protocols via algebraic effects on [kont](https://co
 
 ## Overview
 
-Session types assign a type to each step of a communication protocol. The type system statically guarantees that both endpoints follow the same protocol structure: if one side sends, the other receives; if one selects a branch, the other offers. Protocol violations are caught at compile time.
+Session types assign a type to each step of a communication protocol. Each operation — send, receive, select, offer, close — is individually well-typed via Go generics, and protocol composition within a single endpoint is type-safe. Duality (matching operations across endpoints) is a programmer responsibility: the programmer writes dual protocols, and mismatches manifest at runtime as type assertion failures or deadlocks.
 
 `sess` encodes session types as algebraic effects evaluated by the [kont](https://code.hybscloud.com/kont) effect system. Each protocol step — send, receive, select, offer, close — is an effect that suspends the computation until the transport completes the operation. The transport returns `iox.ErrWouldBlock` at computational boundaries, allowing proactor event loops (e.g., `io_uring`) to multiplex execution without thread-blocking.
 

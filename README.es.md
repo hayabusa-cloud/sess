@@ -11,7 +11,7 @@ Protocolos de comunicacion con tipos de sesion via efectos algebraicos sobre [ko
 
 ## Descripcion General
 
-Los tipos de sesion asignan un tipo a cada paso de un protocolo de comunicacion. El sistema de tipos garantiza estaticamente que ambos endpoints siguen la misma estructura de protocolo: si un lado envia, el otro recibe; si uno selecciona una rama, el otro la ofrece. Las violaciones de protocolo se detectan en tiempo de compilacion.
+Los tipos de sesion asignan un tipo a cada paso de un protocolo de comunicacion. Cada operacion — enviar, recibir, seleccionar, ofrecer, cerrar — tiene tipos seguros individualmente mediante genericos de Go, y la composicion de protocolos dentro de un mismo endpoint es segura en tipos. La dualidad (correspondencia de operaciones entre endpoints) es responsabilidad del programador: el programador escribe protocolos duales, y las discrepancias se manifiestan en tiempo de ejecucion como fallos de asercion de tipo o deadlocks.
 
 `sess` codifica los tipos de sesion como efectos algebraicos evaluados por el sistema de efectos [kont](https://code.hybscloud.com/kont). Cada paso del protocolo — enviar, recibir, seleccionar, ofrecer, cerrar — es un efecto que suspende la computacion hasta que el transporte completa la operacion. El transporte retorna `iox.ErrWouldBlock` en las fronteras computacionales, permitiendo a los bucles de eventos proactor (ej., `io_uring`) multiplexar la ejecucion sin bloquear hilos.
 
