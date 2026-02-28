@@ -11,11 +11,11 @@ Protocolos de comunicacion con tipos de sesion via efectos algebraicos sobre [ko
 
 ## Descripcion General
 
-`sess` proporciona protocolos bidireccionales tipados compuestos por seis operaciones, cada una despachada como un efecto algebraico sobre un par de endpoints sin bloqueo.
+Los tipos de sesion asignan un tipo a cada paso de un protocolo de comunicacion. El sistema de tipos garantiza estaticamente que ambos endpoints siguen la misma estructura de protocolo: si un lado envia, el otro recibe; si uno selecciona una rama, el otro la ofrece. Las violaciones de protocolo se detectan en tiempo de compilacion.
 
-- **API de mundo dual**: Cont (basado en closures) y Expr (basado en marcos, rutas criticas con cero asignaciones)
-- **Paso a paso**: Evalua los efectos uno a la vez para la integracion con proactor y bucle de eventos
-- **Algebra no bloqueante iox**: Impone un modelo de progreso estricto donde las operaciones generan nativamente `iox.ErrWouldBlock` en las fronteras computacionales, permitiendo a los bucles de eventos proactor (ej., io_uring) multiplexar la ejecución sin bloquear los hilos del sistema
+`sess` codifica los tipos de sesion como efectos algebraicos evaluados por el sistema de efectos [kont](https://code.hybscloud.com/kont). Cada paso del protocolo — enviar, recibir, seleccionar, ofrecer, cerrar — es un efecto que suspende la computacion hasta que el transporte completa la operacion. El transporte retorna `iox.ErrWouldBlock` en las fronteras computacionales, permitiendo a los bucles de eventos proactor (ej., `io_uring`) multiplexar la ejecucion sin bloquear hilos.
+
+Dos APIs equivalentes: Cont (basado en closures, composicion directa) y Expr (basado en marcos, cero asignaciones amortizadas para rutas criticas).
 
 ## Instalacion
 
@@ -27,20 +27,21 @@ Requiere Go 1.26+.
 
 ## Operaciones de Sesion
 
-| Operacion | Efecto | ¿Suspende? |
-|-----------|--------|------------|
-| `Send[T]` | Enviar un valor | `iox.ErrWouldBlock` |
-| `Recv[T]` | Recibir un valor | `iox.ErrWouldBlock` |
-| `Close` | Finalizar la sesion | Nunca |
-| `SelectL` | Elegir la rama izquierda | `iox.ErrWouldBlock` |
-| `SelectR` | Elegir la rama derecha | `iox.ErrWouldBlock` |
-| `Offer` | Esperar la eleccion del par | `iox.ErrWouldBlock` |
+Cada operacion tiene un dual. Cuando un endpoint realiza una operacion, el otro debe realizar su dual.
 
-Delegue un endpoint enviandolo; acepte la delegacion recibiendolo.
+| Operacion | Dual | ¿Suspende? |
+|-----------|------|------------|
+| `Send[T]` — enviar un valor | `Recv[T]` — recibir un valor | `iox.ErrWouldBlock` |
+| `SelectL` / `SelectR` — elegir una rama | `Offer` — seguir la eleccion del par | `iox.ErrWouldBlock` |
+| `Close` — finalizar la sesion | `Close` | Nunca |
 
 ## Uso
 
+Use `Run` para el prototipado y la validación de protocolos. Use `Exec` para endpoints administrados externamente. Use la API Expr (`RunExpr`/`ExecExpr`) para el control de stepping o para minimizar la sobrecarga de asignación en rutas críticas.
+
 ### Envio y Recepcion
+
+Un lado envia un valor; el lado dual lo recibe.
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
@@ -53,6 +54,8 @@ a, b := sess.Run(client, server) // "ok", "got 42"
 Equivalente Expr: `ExprSendThen`, `ExprRecvBind`, `ExprCloseDone`, `RunExpr`.
 
 ### Ramificacion
+
+Un lado selecciona una rama; el lado dual ofrece ambas ramas y sigue la seleccion.
 
 ```go
 client := sess.SelectLThen(sess.SendThen(1, sess.CloseDone("left")))
@@ -69,6 +72,8 @@ a, b := sess.Run(client, server)
 
 ### Protocolos Recursivos
 
+Los protocolos que se repiten usan `Loop` con `Either`: `Left` continua el bucle, `Right` termina.
+
 ```go
 counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
     if i >= 3 {
@@ -78,7 +83,20 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 })
 ```
 
+### Delegacion
+
+Transfiera un endpoint a un tercero enviandolo; acepte la delegacion recibiendolo.
+
+```go
+delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
+acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
+    return sess.CloseDone("accepted")
+})
+```
+
 ### Paso a Paso
+
+Para bucles de eventos proactor (ej., `io_uring`), `Step` y `Advance` evaluan un efecto a la vez. A diferencia de `Run` y `Exec` — que esperan sincronamente el progreso — la API de stepping devuelve `iox.ErrWouldBlock` al llamador, permitiendo al bucle de eventos reprogramar.
 
 ```go
 ep, _ := sess.New()
@@ -94,6 +112,8 @@ susp = nextSusp
 
 ### Manejo de Errores
 
+Componga protocolos de sesion con efectos de error. `Throw` cortocircuita el protocolo y descarta la suspension pendiente.
+
 ```go
 clientResult, serverResult := sess.RunError[string, string, string](client, server)
 // Either[string, string]: Right en exito, Left en Throw
@@ -101,7 +121,7 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 
 ## Modelo de Ejecucion
 
-| Funcion | Caso de uso |
+| Funcion | Descripcion |
 |---------|-------------|
 | `Run` / `RunExpr` | Ejecutar ambos lados en un goroutine — crea un par de endpoints internamente |
 | `Exec` / `ExecExpr` | Ejecutar un lado en un endpoint pre-creado |
@@ -120,6 +140,15 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 | Paso a paso | | `Step`, `Advance`, `StepError`, `AdvanceError` |
 | Puente | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | Transporte | `New` → `(*Endpoint, *Endpoint)` | |
+
+## References
+
+- Kohei Honda. "Types for Dyadic Interaction." In *CONCUR 1993* (LNCS 715), pp. 509-523. Springer, 1993. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, Makoto Kubo. "Language Primitives and Type Discipline for Structured Communication-Based Programming." In *ESOP 1998* (LNCS 1381), pp. 122-138. Springer, 1998. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. "Propositions as Sessions." *Journal of Functional Programming* 24(2-3):384-418, 2014. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard, Nobuko Yoshida. "Effects as Sessions, Sessions as Effects." In *POPL 2016*, pp. 568-581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley, J. Garrett Morris. "Lightweight Functional Session Types." In *Behavioural Types: From Theory to Tools*, pp. 265-286, 2017 (first published year; DOI metadata date is 2022-09-01). https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, Sara Decova. "Exceptional Asynchronous Session Types: Session Types without Tiers." *Proc. ACM Program. Lang.* 3(POPL):28:1-28:29, 2019. https://doi.org/10.1145/3290341
 
 ## Dependencias
 
