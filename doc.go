@@ -13,6 +13,7 @@
 //   - Non-blocking: Operations return [code.hybscloud.com/iox.ErrWouldBlock] on backpressure.
 //   - Execution: Dual-world API supporting closure-based (Cont-world) and defunctionalized (Expr-world) evaluation.
 //   - Error Handling: Session operations are non-blocking, while error operations short-circuit returning [code.hybscloud.com/kont.Either].
+//   - Contract: Each [Endpoint] is intended for single-goroutine use over an SPSC transport. Protocol duality and post-[Close] terminality remain caller responsibilities so the hot path stays validation-free. For interface-typed payloads, the value must carry a concrete dynamic type; nil interface payloads such as any(nil) are out of contract.
 //
 // # API Topologies
 //

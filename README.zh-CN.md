@@ -127,6 +127,14 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 
 **Cont 与 Expr 的选择**：Cont 基于闭包，组合简单直接。Expr 基于帧，摊销零分配，适合热路径。
 
+## 契约
+
+`sess` 提供的是面向受信调用方的传输 API。每个端点都假定在同一时刻只由一个 goroutine 使用，热路径有意不加入并发使用保护或
+`Close` 之后的检查。
+
+即使负载类型是接口，实际传递的值也必须带有具体的动态类型。像 `any(nil)` 或 `error(nil)` 这样的 nil 接口值不在契约内；如果
+nil 本身具有语义，请使用带具体类型的 nil 值，或显式包一层。
+
 ## API
 
 | 类别 | Cont | Expr |

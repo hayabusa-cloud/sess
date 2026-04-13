@@ -66,7 +66,9 @@ func dispatchWait(ctx *sessionContext, sop sessionDispatcher) kont.Resumed {
 }
 
 // Endpoint represents one side of a session-typed channel pair.
-// Transport is backed by bounded lock-free SPSC queues from lfq.
+// Transport is backed by bounded lock-free SPSC queues from lfq. Endpoints are
+// intended for single-goroutine use; sess relies on caller discipline instead
+// of hot-path concurrent-use or post-Close policing.
 type Endpoint struct {
 	ctx    sessionContext
 	serial Serial
