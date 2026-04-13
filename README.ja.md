@@ -127,6 +127,14 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 
 **Cont と Expr の使い分け**: Cont はクロージャベースで合成が容易。Expr はフレームベースで償却ゼロアロケーション、ホットパスに適する。
 
+## 契約
+
+`sess` は信頼された呼び出し側を前提とするトランスポート API です。各エンドポイントは同時に 1 つの goroutine
+だけが扱う前提であり、ホットパスには並行利用のガードや `Close` 後の検査を意図的に入れていません。
+
+ペイロード型がインタフェースであっても、値は具体的な動的型を持っている必要があります。`any(nil)` や `error(nil)` のような
+nil インタフェース値は契約外です。nil 自体に意味がある場合は、具体型を持つ nil 値を使うか、明示的なラッパーで包んでください。
+
 ## API
 
 | カテゴリ | Cont | Expr |

@@ -10,6 +10,8 @@ import (
 
 // Send is the effect operation for sending a value of type T.
 // Perform(Send[T]{Value: v}) sends v to the peer endpoint.
+// For interface-typed T, v must carry a concrete dynamic type.
+// Nil interface payloads such as any(nil) are out of contract.
 type Send[T any] struct {
 	kont.Phantom[struct{}]
 	Value T
@@ -42,13 +44,15 @@ func (Recv[T]) DispatchSession(ctx *sessionContext) (kont.Resumed, error) {
 }
 
 // Close is the effect operation for closing the session.
-// Perform(Close{}) signals session termination.
+// Perform(Close{}) signals session termination under the caller-owned protocol
+// contract.
 type Close struct {
 	kont.Phantom[struct{}]
 }
 
 // DispatchSession handles Close on the session transport.
-// Atomically increments the shared close counter. Never blocks.
+// Atomically increments the shared close counter. Never blocks and does not
+// police later protocol misuse.
 func (Close) DispatchSession(ctx *sessionContext) (kont.Resumed, error) {
 	ctx.closed.Add(1)
 	return struct{}{}, nil

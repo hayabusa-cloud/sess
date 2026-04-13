@@ -129,6 +129,15 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 
 **Cont vs Expr**: Cont is closure-based and straightforward to compose. Expr is frame-based with amortized zero-allocation, suited for hot paths.
 
+## Contract
+
+`sess` exposes a trusted-caller transport API. Each endpoint is intended to be used by one goroutine at a time, and the
+hot path intentionally omits concurrent-use guards and post-`Close` checks.
+
+If a payload type is an interface, the value must still carry a concrete dynamic type. Nil interface values such as
+`any(nil)` or `error(nil)` are outside the contract; if nil is semantically meaningful, use a nil value of a concrete
+type or wrap it explicitly.
+
 ## API
 
 | Category | Cont | Expr |
