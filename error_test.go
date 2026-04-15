@@ -13,6 +13,23 @@ import (
 	"code.hybscloud.com/sess"
 )
 
+func requireNoSessionThrow[E any](t *testing.T, thrown *E) {
+	t.Helper()
+	if thrown != nil {
+		t.Fatalf("expected nil session throw, got %v", *thrown)
+	}
+}
+
+func requireSessionThrow[E comparable](t *testing.T, thrown *E, want E) {
+	t.Helper()
+	if thrown == nil {
+		t.Fatal("expected non-nil session throw")
+	}
+	if *thrown != want {
+		t.Fatalf("session throw got %v, want %v", *thrown, want)
+	}
+}
+
 func TestExecErrorSuccess(t *testing.T) {
 	skipRace(t)
 	// Success path: no error thrown, result is Right
@@ -21,7 +38,8 @@ func TestExecErrorSuccess(t *testing.T) {
 		return sess.CloseDone(fmt.Sprintf("got %d", n))
 	})
 
-	clientResult, serverResult := sess.RunError[string, string, string](client, server)
+	clientResult, serverResult, thrown := sess.RunError[string, string, string](client, server)
+	requireNoSessionThrow(t, thrown)
 	if !clientResult.IsRight() {
 		t.Fatalf("client expected Right, got Left")
 	}
@@ -48,7 +66,8 @@ func TestExecErrorThrow(t *testing.T) {
 		return sess.CloseDone(fmt.Sprintf("got %d", n))
 	})
 
-	clientResult, _ := sess.RunError[string, string, string](client, server)
+	clientResult, _, thrown := sess.RunError[string, string, string](client, server)
+	requireSessionThrow(t, thrown, "boom")
 	if !clientResult.IsLeft() {
 		t.Fatalf("client expected Left, got Right")
 	}
@@ -78,7 +97,8 @@ func TestExecErrorCatchRecovery(t *testing.T) {
 		return sess.CloseDone(s)
 	})
 
-	clientResult, serverResult := sess.RunError[string, string, string](protocol, server)
+	clientResult, serverResult, thrown := sess.RunError[string, string, string](protocol, server)
+	requireNoSessionThrow(t, thrown)
 	if !clientResult.IsRight() {
 		t.Fatalf("client expected Right, got Left")
 	}
@@ -103,7 +123,8 @@ func TestExecErrorExprSuccess(t *testing.T) {
 		return sess.ExprCloseDone(fmt.Sprintf("got %d", n))
 	})
 
-	clientResult, serverResult := sess.RunErrorExpr[string, string, string](client, server)
+	clientResult, serverResult, thrown := sess.RunErrorExpr[string, string, string](client, server)
+	requireNoSessionThrow(t, thrown)
 	if !clientResult.IsRight() {
 		t.Fatalf("client expected Right, got Left")
 	}
@@ -130,13 +151,172 @@ func TestExecErrorExprThrow(t *testing.T) {
 		return sess.ExprCloseDone(fmt.Sprintf("got %d", n))
 	})
 
-	clientResult, _ := sess.RunErrorExpr[string, string, string](client, server)
+	clientResult, _, thrown := sess.RunErrorExpr[string, string, string](client, server)
+	requireSessionThrow(t, thrown, "expr-boom")
 	if !clientResult.IsLeft() {
 		t.Fatalf("client expected Left, got Right")
 	}
 	errVal, _ := clientResult.GetLeft()
 	if errVal != "expr-boom" {
 		t.Fatalf("client error got %q, want %q", errVal, "expr-boom")
+	}
+}
+
+func TestRunErrorExprCatchRecovery(t *testing.T) {
+	skipRace(t)
+	client := sess.Reify(kont.Bind(
+		kont.CatchError(
+			kont.ThrowError[string, string]("fail"),
+			func(e string) kont.Eff[string] {
+				return kont.Pure("recovered: " + e)
+			},
+		),
+		func(s string) kont.Eff[string] {
+			return sess.SendThen(s, sess.CloseDone(s))
+		},
+	))
+	server := sess.ExprRecvBind(func(s string) kont.Expr[string] {
+		return sess.ExprCloseDone(s)
+	})
+
+	clientResult, serverResult, thrown := sess.RunErrorExpr[string, string, string](client, server)
+	requireNoSessionThrow(t, thrown)
+	if !clientResult.IsRight() {
+		t.Fatalf("client expected Right, got Left")
+	}
+	clientValue, _ := clientResult.GetRight()
+	if clientValue != "recovered: fail" {
+		t.Fatalf("client got %q, want %q", clientValue, "recovered: fail")
+	}
+	if !serverResult.IsRight() {
+		t.Fatalf("server expected Right, got Left")
+	}
+	serverValue, _ := serverResult.GetRight()
+	if serverValue != "recovered: fail" {
+		t.Fatalf("server got %q, want %q", serverValue, "recovered: fail")
+	}
+}
+
+func TestRunErrorExprThrowKeepsBlockedPeerLocalResultUnresolved(t *testing.T) {
+	skipRace(t)
+	client := kont.ExprThrowError[string, string]("boom")
+	server := sess.ExprRecvBind(func(v int) kont.Expr[string] {
+		return sess.ExprCloseDone(fmt.Sprintf("got %d", v))
+	})
+
+	clientResult, serverResult, thrown := sess.RunErrorExpr[string, string, string](client, server)
+	requireSessionThrow(t, thrown, "boom")
+	if !clientResult.IsLeft() {
+		t.Fatalf("client expected Left, got Right")
+	}
+	clientErr, _ := clientResult.GetLeft()
+	if clientErr != "boom" {
+		t.Fatalf("client error got %q, want %q", clientErr, "boom")
+	}
+	if !serverResult.IsLeft() {
+		t.Fatalf("server expected zero Left while unresolved, got Right")
+	}
+	serverErr, _ := serverResult.GetLeft()
+	if serverErr != "" {
+		t.Fatalf("server unresolved peer result got %q, want zero-value left", serverErr)
+	}
+}
+
+func TestRunErrorExprThrowFromServerKeepsBlockedPeerLocalResultUnresolved(t *testing.T) {
+	skipRace(t)
+	client := sess.ExprRecvBind(func(v int) kont.Expr[string] {
+		return sess.ExprCloseDone(fmt.Sprintf("got %d", v))
+	})
+	server := kont.ExprThrowError[string, string]("boom")
+
+	clientResult, serverResult, thrown := sess.RunErrorExpr[string, string, string](client, server)
+	requireSessionThrow(t, thrown, "boom")
+	if !serverResult.IsLeft() {
+		t.Fatalf("server expected Left, got Right")
+	}
+	serverErr, _ := serverResult.GetLeft()
+	if serverErr != "boom" {
+		t.Fatalf("server error got %q, want %q", serverErr, "boom")
+	}
+	if !clientResult.IsLeft() {
+		t.Fatalf("client expected zero Left while unresolved, got Right")
+	}
+	clientErr, _ := clientResult.GetLeft()
+	if clientErr != "" {
+		t.Fatalf("client unresolved peer result got %q, want zero-value left", clientErr)
+	}
+}
+
+func TestRunErrorExprBothSidesThrowUsesFirstObservedSessionThrow(t *testing.T) {
+	skipRace(t)
+	client := kont.ExprThrowError[string, string]("left-boom")
+	server := kont.ExprThrowError[string, string]("right-boom")
+
+	clientResult, serverResult, thrown := sess.RunErrorExpr[string, string, string](client, server)
+	requireSessionThrow(t, thrown, "left-boom")
+	if !clientResult.IsLeft() {
+		t.Fatalf("client expected Left, got Right")
+	}
+	clientErr, _ := clientResult.GetLeft()
+	if clientErr != "left-boom" {
+		t.Fatalf("client error got %q, want %q", clientErr, "left-boom")
+	}
+	if !serverResult.IsLeft() {
+		t.Fatalf("server expected zero Left while unresolved, got Right")
+	}
+	serverErr, _ := serverResult.GetLeft()
+	if serverErr != "" {
+		t.Fatalf("server unresolved peer result got %q, want zero-value left", serverErr)
+	}
+}
+
+func TestRunErrorExprRetriesBlockedRecvUntilPeerSendSucceeds(t *testing.T) {
+	skipRace(t)
+	client := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+		return sess.ExprCloseDone(fmt.Sprintf("got %d", n))
+	})
+	server := sess.ExprSendThen(42, sess.ExprCloseDone("peer"))
+
+	clientResult, serverResult, thrown := sess.RunErrorExpr[string, string, string](client, server)
+	requireNoSessionThrow(t, thrown)
+	if !clientResult.IsRight() {
+		t.Fatalf("client expected Right, got Left")
+	}
+	clientValue, _ := clientResult.GetRight()
+	if clientValue != "got 42" {
+		t.Fatalf("client got %q, want %q", clientValue, "got 42")
+	}
+	if !serverResult.IsRight() {
+		t.Fatalf("server expected Right, got Left")
+	}
+	serverValue, _ := serverResult.GetRight()
+	if serverValue != "peer" {
+		t.Fatalf("server got %q, want %q", serverValue, "peer")
+	}
+}
+
+func TestRunErrorExprRetriesBlockedRecvBeforeThrow(t *testing.T) {
+	skipRace(t)
+	client := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+		return kont.ExprThrowError[string, string](fmt.Sprintf("boom %d", n))
+	})
+	server := sess.ExprSendThen(42, sess.ExprCloseDone("peer"))
+
+	clientResult, serverResult, thrown := sess.RunErrorExpr[string, string, string](client, server)
+	requireSessionThrow(t, thrown, "boom 42")
+	if !clientResult.IsLeft() {
+		t.Fatalf("client expected Left, got Right")
+	}
+	clientErr, _ := clientResult.GetLeft()
+	if clientErr != "boom 42" {
+		t.Fatalf("client error got %q, want %q", clientErr, "boom 42")
+	}
+	if !serverResult.IsRight() {
+		t.Fatalf("server expected Right, got Left")
+	}
+	serverValue, _ := serverResult.GetRight()
+	if serverValue != "peer" {
+		t.Fatalf("server got %q, want %q", serverValue, "peer")
 	}
 }
 
@@ -313,7 +493,8 @@ func TestLoopWithError(t *testing.T) {
 		})
 	})
 
-	clientResult, _ := sess.RunError[string, string, int](client, server)
+	clientResult, _, thrown := sess.RunError[string, string, int](client, server)
+	requireSessionThrow(t, thrown, "limit")
 	if !clientResult.IsLeft() {
 		t.Fatalf("client expected Left, got Right")
 	}
@@ -341,7 +522,8 @@ func TestExprLoopWithError(t *testing.T) {
 		})
 	})
 
-	clientResult, _ := sess.RunErrorExpr[string, string, int](client, server)
+	clientResult, _, thrown := sess.RunErrorExpr[string, string, int](client, server)
+	requireSessionThrow(t, thrown, "limit")
 	if !clientResult.IsLeft() {
 		t.Fatalf("client expected Left, got Right")
 	}
