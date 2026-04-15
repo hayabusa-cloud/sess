@@ -15,7 +15,8 @@ Les types de session assignent un type a chaque etape d'un protocole de communic
 
 `sess` encode les types de session comme des effets algebriques evalues par le systeme d'effets [kont](https://code.hybscloud.com/kont). Chaque etape du protocole — envoyer, recevoir, selectionner, offrir, fermer — est un effet qui suspend le calcul jusqu'a ce que le transport complete l'operation. Le transport retourne `iox.ErrWouldBlock` aux frontieres computationnelles, permettant aux boucles d'evenements proactor (ex., `io_uring`) de multiplexer l'execution sans bloquer les threads.
 
-Deux APIs equivalentes : Cont (base sur les fermetures, composition directe) et Expr (base sur les cadres, zero allocation amortie pour les chemins critiques).
+Deux familles d'API equivalentes sont disponibles : Cont (basee sur les fermetures et simple a composer) et Expr (basee
+sur les cadres, avec zero allocation amortie sur les chemins critiques).
 
 ## Installation
 
@@ -37,7 +38,9 @@ Chaque operation a un dual. Quand un endpoint effectue une operation, l'autre do
 
 ## Utilisation
 
-Utilisez `Run` pour le prototypage et la validation de protocoles. Utilisez `Exec` pour les endpoints gérés en externe. Utilisez l'API Expr (`RunExpr`/`ExecExpr`) pour le contrôle en pas à pas ou pour minimiser la surcharge d'allocation sur les chemins critiques.
+Utilisez `Run` pour prototyper et valider des protocoles. Utilisez `Exec` avec des endpoints geres en externe. Utilisez
+l'API Expr (`RunExpr`/`ExecExpr`) lorsque vous avez besoin d'un controle pas a pas ou que vous voulez minimiser la
+surcharge d'allocation sur les chemins critiques.
 
 ### Envoi et Reception
 
@@ -112,12 +115,35 @@ susp = nextSusp
 
 ### Gestion des Erreurs
 
-Composez des protocoles de session avec des effets d'erreur. `Throw` court-circuite immediatement le protocole et abandonne la suspension en attente.
+Composez des protocoles de session avec des effets d'erreur. `Throw` interrompt immediatement l'execution pairee. La
+valeur `thrown` retournee est la cause globale du `Throw` non capture ; consultez-la avant d'interpreter un `Either`
+cote pair.
 
 ```go
-clientResult, serverResult := sess.RunError[string, string, string](client, server)
-// Either[string, string]: Right en cas de succes, Left en cas de Throw
+client := kont.ExprThrowError[string, string]("boom")
+server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
+	return sess.ExprCloseDone("recv: " + v)
+})
+
+clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
+if thrown != nil {
+	// Abandon global de la session.
+	fmt.Println("session aborted:", *thrown)
+	// Le Either du pair peut encore rester localement non resolu.
+	_ = clientResult
+	_ = serverResult
+	return
+}
+
+// Aucun Throw global non capture : les deux Either sont des resultats locaux finaux.
+fmt.Println(clientResult, serverResult)
 ```
+
+En bref :
+
+- `thrown == nil` : les deux valeurs `Either` sont des resultats locaux finaux.
+- `thrown != nil` : l'execution pairee a ete interrompue globalement ; `*thrown` est le `Throw` non capture et le
+  `Either` du pair peut encore etre non resolu.
 
 ## Modele d'Execution
 

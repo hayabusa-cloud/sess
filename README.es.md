@@ -15,7 +15,8 @@ Los tipos de sesion asignan un tipo a cada paso de un protocolo de comunicacion.
 
 `sess` codifica los tipos de sesion como efectos algebraicos evaluados por el sistema de efectos [kont](https://code.hybscloud.com/kont). Cada paso del protocolo — enviar, recibir, seleccionar, ofrecer, cerrar — es un efecto que suspende la computacion hasta que el transporte completa la operacion. El transporte retorna `iox.ErrWouldBlock` en las fronteras computacionales, permitiendo a los bucles de eventos proactor (ej., `io_uring`) multiplexar la ejecucion sin bloquear hilos.
 
-Dos APIs equivalentes: Cont (basado en closures, composicion directa) y Expr (basado en marcos, cero asignaciones amortizadas para rutas criticas).
+Hay dos familias de API equivalentes: Cont (basada en closures y de composicion directa) y Expr (basada en frames, con
+cero asignaciones amortizadas para rutas criticas).
 
 ## Instalacion
 
@@ -37,7 +38,9 @@ Cada operacion tiene un dual. Cuando un endpoint realiza una operacion, el otro 
 
 ## Uso
 
-Use `Run` para el prototipado y la validación de protocolos. Use `Exec` para endpoints administrados externamente. Use la API Expr (`RunExpr`/`ExecExpr`) para el control de stepping o para minimizar la sobrecarga de asignación en rutas críticas.
+Use `Run` para prototipar y validar protocolos. Use `Exec` con endpoints administrados externamente. Use la API Expr (
+`RunExpr`/`ExecExpr`) cuando necesite control de stepping o quiera minimizar la sobrecarga de asignacion en rutas
+criticas.
 
 ### Envio y Recepcion
 
@@ -112,12 +115,34 @@ susp = nextSusp
 
 ### Manejo de Errores
 
-Componga protocolos de sesion con efectos de error. `Throw` cortocircuita el protocolo y descarta la suspension pendiente.
+Componga protocolos de sesion con efectos de error. `Throw` aborta inmediatamente la ejecucion emparejada. El valor
+`thrown` devuelto es la causa global no capturada del `Throw`; reviselo antes de interpretar el `Either` del par.
 
 ```go
-clientResult, serverResult := sess.RunError[string, string, string](client, server)
-// Either[string, string]: Right en exito, Left en Throw
+client := kont.ExprThrowError[string, string]("boom")
+server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
+	return sess.ExprCloseDone("recv: " + v)
+})
+
+clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
+if thrown != nil {
+	// Aborto global de la sesion.
+	fmt.Println("session aborted:", *thrown)
+	// El Either del par aun puede seguir sin resolverse localmente.
+	_ = clientResult
+	_ = serverResult
+	return
+}
+
+// Sin Throw global no capturado: ambos Either son resultados locales finales.
+fmt.Println(clientResult, serverResult)
 ```
+
+En breve:
+
+- `thrown == nil`: ambos valores `Either` son resultados locales finales.
+- `thrown != nil`: la ejecucion emparejada aborto globalmente; `*thrown` es el `Throw` no capturado y el `Either` del
+  par aun puede seguir sin resolverse.
 
 ## Modelo de Ejecucion
 

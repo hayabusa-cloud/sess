@@ -15,7 +15,8 @@ Session types assign a type to each step of a communication protocol. Each opera
 
 `sess` encodes session types as algebraic effects evaluated by the [kont](https://code.hybscloud.com/kont) effect system. Each protocol step — send, receive, select, offer, close — is an effect that suspends the computation until the transport completes the operation. The transport returns `iox.ErrWouldBlock` at computational boundaries, allowing proactor event loops (e.g., `io_uring`) to multiplex execution without thread-blocking.
 
-Two equivalent APIs: Cont (closure-based, straightforward composition) and Expr (frame-based, amortized zero-allocation for hot paths).
+Two equivalent API families are available: Cont (closure-based, straightforward to compose) and Expr (frame-based,
+amortized zero-allocation for hot paths).
 
 ## Installation
 
@@ -37,7 +38,8 @@ Each operation has a dual. When one endpoint performs an operation, the other mu
 
 ## Usage
 
-Use `Run` for protocol prototyping and validation. Use `Exec` for externally managed endpoints. Use the Expr API (`RunExpr`/`ExecExpr`) for stepping control or to minimize allocation overhead on hot paths.
+Use `Run` to prototype and validate protocols. Use `Exec` with externally managed endpoints. Use the Expr API (
+`RunExpr`/`ExecExpr`) when you need stepping control or want to minimize allocation overhead on hot paths.
 
 ### Send and Receive
 
@@ -112,12 +114,34 @@ susp = nextSusp
 
 ### Error Handling
 
-Compose session protocols with error effects. `Throw` eagerly short-circuits the protocol and discards the pending suspension.
+Compose session protocols with error effects. `Throw` immediately aborts the paired run. The returned `thrown` value is
+the session-global uncaught throw cause; check it before interpreting a peer-side `Either`.
 
 ```go
-clientResult, serverResult := sess.RunError[string, string, string](client, server)
-// Either[string, string]: Right on success, Left on Throw
+client := kont.ExprThrowError[string, string]("boom")
+server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
+	return sess.ExprCloseDone("recv: " + v)
+})
+
+clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
+if thrown != nil {
+	// Global session abort.
+	fmt.Println("session aborted:", *thrown)
+	// The peer-side Either may still be locally unresolved.
+	_ = clientResult
+	_ = serverResult
+	return
+}
+
+// No uncaught session-wide throw: both Either values are final local outcomes.
+fmt.Println(clientResult, serverResult)
 ```
+
+In brief:
+
+- `thrown == nil`: both `Either` values are final local outcomes.
+- `thrown != nil`: the paired run aborted globally; `*thrown` is the uncaught throw, and a peer-side `Either` may still
+  be unresolved.
 
 ## Execution Model
 
@@ -131,8 +155,8 @@ clientResult, serverResult := sess.RunError[string, string, string](client, serv
 
 ## Contract
 
-`sess` exposes a trusted-caller transport API. Each endpoint is intended to be used by one goroutine at a time, and the
-hot path intentionally omits concurrent-use guards and post-`Close` checks.
+`sess` exposes a trusted-caller transport API. Each endpoint is intended for use by one goroutine at a time, and the hot
+path intentionally omits concurrent-use guards and post-`Close` checks.
 
 If a payload type is an interface, the value must still carry a concrete dynamic type. Nil interface values such as
 `any(nil)` or `error(nil)` are outside the contract; if nil is semantically meaningful, use a nil value of a concrete

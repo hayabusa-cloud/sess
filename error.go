@@ -59,7 +59,9 @@ func wrapRight[E, R any](protocol kont.Expr[R]) kont.Expr[kont.Either[E, R]] {
 	}
 	uf := kont.AcquireUnwindFrame()
 	uf.Unwind = rightUnwind[E, R]
-	return kont.Expr[kont.Either[E, R]]{Frame: kont.ChainFrames(protocol.Frame, uf)}
+	return kont.Expr[kont.Either[E, R]]{
+		Frame: kont.ChainFrames(protocol.Frame, uf),
+	}
 }
 
 // ExecErrorExpr runs an Expr-world session protocol with error handling on a pre-created endpoint.
@@ -74,37 +76,48 @@ func ExecErrorExpr[E, R any](ep *Endpoint, protocol kont.Expr[R]) kont.Either[E,
 }
 
 // RunError creates a session pair, runs both Cont-world protocols with error
-// handling, and returns both results as Either values. Interleaves execution
-// of both sides on the calling goroutine using adaptive backoff (iox.Backoff).
-// Does not spawn goroutines or create channels.
-func RunError[E, A, B any](a kont.Eff[A], b kont.Eff[B]) (kont.Either[E, A], kont.Either[E, B]) {
+// handling, and returns both local results plus the first uncaught session-wide
+// thrown cause when one occurs.
+//
+// When the returned thrown is non-nil, the paired session terminated by an
+// uncaught Throw. Callers should check thrown before interpreting a peer-side
+// Either result, because the non-throwing side may still be locally unresolved
+// when the session abort becomes global.
+//
+// Interleaves execution of both sides on the calling goroutine using adaptive
+// backoff (iox.Backoff). Does not spawn goroutines or create channels.
+func RunError[E, A, B any](a kont.Eff[A], b kont.Eff[B]) (kont.Either[E, A], kont.Either[E, B], *E) {
 	return RunErrorExpr[E](Reify(a), Reify(b))
 }
 
-// propagateSessionAbort checks if both session results are complete and contain errors, collapsing them if necessary.
-func propagateSessionAbort[E, A, B any](resultA kont.Either[E, A], doneA bool, resultB kont.Either[E, B], doneB bool) (kont.Either[E, A], kont.Either[E, B], bool) {
-	if doneA && resultA.IsLeft() {
-		if doneB && resultB.IsLeft() {
-			return resultA, resultB, true
-		}
-		err, _ := resultA.GetLeft()
-		return resultA, kont.Left[E, B](err), true
-	}
-	if doneB && resultB.IsLeft() {
-		err, _ := resultB.GetLeft()
-		return kont.Left[E, A](err), resultB, true
-	}
-	return resultA, resultB, false
-}
-
 // RunErrorExpr creates a session pair, runs both Expr-world protocols with
-// error handling, and returns both results as Either values. Interleaves
-// execution of both sides on the calling goroutine using adaptive backoff
-// (iox.Backoff). Does not spawn goroutines or create channels.
-func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A], kont.Either[E, B]) {
+// error handling, and returns both local results plus the first uncaught
+// session-wide thrown cause when one occurs.
+//
+// If thrown is nil, both returned Either values are final local outcomes.
+// If thrown is non-nil, the paired session terminated by uncaught Throw;
+// callers should inspect thrown first, because a peer-side Either may still
+// reflect a locally unresolved computation rather than a peer-local throw.
+// Internally, doneA/doneB track whether each side has actually completed,
+// because StepError/AdvanceError leave a pending side in the zero value of
+// Either until its suspension resolves.
+//
+// Interleaves execution of both sides on the calling goroutine using adaptive
+// backoff (iox.Backoff). Does not spawn goroutines or create channels.
+func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A], kont.Either[E, B], *E) {
 	epA, epB := New()
 	resultA, suspA := StepError[E, A](a)
 	resultB, suspB := StepError[E, B](b)
+
+	defer func() {
+		if suspA != nil {
+			suspA.Discard()
+		}
+		if suspB != nil {
+			suspB.Discard()
+		}
+	}()
+
 	doneA := suspA == nil
 	doneB := suspB == nil
 	var bo iox.Backoff
@@ -115,8 +128,9 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 			resultA, suspA, err = AdvanceError[E](epA, suspA)
 			if err == nil {
 				doneA = suspA == nil
-				if collapsedA, collapsedB, done := propagateSessionAbort(resultA, doneA, resultB, doneB); done {
-					return collapsedA, collapsedB
+				if doneA && resultA.IsLeft() {
+					errVal, _ := resultA.GetLeft()
+					return resultA, resultB, &errVal
 				}
 				progress = true
 			}
@@ -126,8 +140,9 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 			resultB, suspB, err = AdvanceError[E](epB, suspB)
 			if err == nil {
 				doneB = suspB == nil
-				if collapsedA, collapsedB, done := propagateSessionAbort(resultA, doneA, resultB, doneB); done {
-					return collapsedA, collapsedB
+				if doneB && resultB.IsLeft() {
+					errVal, _ := resultB.GetLeft()
+					return resultA, resultB, &errVal
 				}
 				progress = true
 			}
@@ -138,7 +153,7 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 			bo.Reset()
 		}
 	}
-	return resultA, resultB
+	return resultA, resultB, nil
 }
 
 // StepError evaluates a session protocol with error support until the first

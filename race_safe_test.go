@@ -25,10 +25,13 @@ func TestRunCloseOnlyRaceSafe(t *testing.T) {
 }
 
 func TestRunErrorCloseOnlyRaceSafe(t *testing.T) {
-	left, right := sess.RunError[string](
+	left, right, thrown := sess.RunError[string](
 		sess.CloseDone("left"),
 		sess.CloseDone("right"),
 	)
+	if thrown != nil {
+		t.Fatalf("expected nil thrown, got %v", *thrown)
+	}
 	if !left.IsRight() {
 		t.Fatal("left expected Right, got Left")
 	}
