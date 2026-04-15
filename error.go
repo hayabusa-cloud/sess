@@ -81,22 +81,6 @@ func RunError[E, A, B any](a kont.Eff[A], b kont.Eff[B]) (kont.Either[E, A], kon
 	return RunErrorExpr[E](Reify(a), Reify(b))
 }
 
-// propagateSessionAbort checks if both session results are complete and contain errors, collapsing them if necessary.
-func propagateSessionAbort[E, A, B any](resultA kont.Either[E, A], doneA bool, resultB kont.Either[E, B], doneB bool) (kont.Either[E, A], kont.Either[E, B], bool) {
-	if doneA && resultA.IsLeft() {
-		if doneB && resultB.IsLeft() {
-			return resultA, resultB, true
-		}
-		err, _ := resultA.GetLeft()
-		return resultA, kont.Left[E, B](err), true
-	}
-	if doneB && resultB.IsLeft() {
-		err, _ := resultB.GetLeft()
-		return kont.Left[E, A](err), resultB, true
-	}
-	return resultA, resultB, false
-}
-
 // RunErrorExpr creates a session pair, runs both Expr-world protocols with
 // error handling, and returns both results as Either values. Interleaves
 // execution of both sides on the calling goroutine using adaptive backoff
@@ -105,8 +89,6 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 	epA, epB := New()
 	resultA, suspA := StepError[E, A](a)
 	resultB, suspB := StepError[E, B](b)
-	doneA := suspA == nil
-	doneB := suspB == nil
 	var bo iox.Backoff
 	for suspA != nil || suspB != nil {
 		progress := false
@@ -114,10 +96,6 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 			var err error
 			resultA, suspA, err = AdvanceError[E](epA, suspA)
 			if err == nil {
-				doneA = suspA == nil
-				if collapsedA, collapsedB, done := propagateSessionAbort(resultA, doneA, resultB, doneB); done {
-					return collapsedA, collapsedB
-				}
 				progress = true
 			}
 		}
@@ -125,10 +103,6 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 			var err error
 			resultB, suspB, err = AdvanceError[E](epB, suspB)
 			if err == nil {
-				doneB = suspB == nil
-				if collapsedA, collapsedB, done := propagateSessionAbort(resultA, doneA, resultB, doneB); done {
-					return collapsedA, collapsedB
-				}
 				progress = true
 			}
 		}

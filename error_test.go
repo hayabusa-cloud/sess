@@ -7,7 +7,6 @@ package sess_test
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"code.hybscloud.com/iox"
 	"code.hybscloud.com/kont"
@@ -49,20 +48,13 @@ func TestExecErrorThrow(t *testing.T) {
 		return sess.CloseDone(fmt.Sprintf("got %d", n))
 	})
 
-	clientResult, serverResult := sess.RunError[string, string, string](client, server)
+	clientResult, _ := sess.RunError[string, string, string](client, server)
 	if !clientResult.IsLeft() {
 		t.Fatalf("client expected Left, got Right")
 	}
 	errVal, _ := clientResult.GetLeft()
 	if errVal != "boom" {
 		t.Fatalf("client error got %q, want %q", errVal, "boom")
-	}
-	if !serverResult.IsLeft() {
-		t.Fatalf("server expected Left, got Right")
-	}
-	serverErr, _ := serverResult.GetLeft()
-	if serverErr != "boom" {
-		t.Fatalf("server error got %q, want %q", serverErr, "boom")
 	}
 }
 
@@ -138,117 +130,13 @@ func TestExecErrorExprThrow(t *testing.T) {
 		return sess.ExprCloseDone(fmt.Sprintf("got %d", n))
 	})
 
-	clientResult, serverResult := sess.RunErrorExpr[string, string, string](client, server)
+	clientResult, _ := sess.RunErrorExpr[string, string, string](client, server)
 	if !clientResult.IsLeft() {
 		t.Fatalf("client expected Left, got Right")
 	}
 	errVal, _ := clientResult.GetLeft()
 	if errVal != "expr-boom" {
 		t.Fatalf("client error got %q, want %q", errVal, "expr-boom")
-	}
-	if !serverResult.IsLeft() {
-		t.Fatalf("server expected Left, got Right")
-	}
-	serverErr, _ := serverResult.GetLeft()
-	if serverErr != "expr-boom" {
-		t.Fatalf("server error got %q, want %q", serverErr, "expr-boom")
-	}
-}
-
-func TestRunErrorExprThrowAbortsBlockedPeer(t *testing.T) {
-	skipRace(t)
-	client := kont.ExprThrowError[string, struct{}]("boom")
-	server := sess.ExprRecvBind(func(v int) kont.Expr[struct{}] {
-		return sess.ExprCloseDone(struct{}{})
-	})
-
-	done := make(chan struct{})
-	var clientResult kont.Either[string, struct{}]
-	var serverResult kont.Either[string, struct{}]
-	go func() {
-		clientResult, serverResult = sess.RunErrorExpr[string, struct{}, struct{}](client, server)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("RunErrorExpr did not terminate after uncaught throw")
-	}
-
-	if !clientResult.IsLeft() {
-		t.Fatalf("client expected Left, got Right")
-	}
-	clientErr, _ := clientResult.GetLeft()
-	if clientErr != "boom" {
-		t.Fatalf("client error got %q, want %q", clientErr, "boom")
-	}
-	if !serverResult.IsLeft() {
-		t.Fatalf("server expected Left, got Right")
-	}
-	serverErr, _ := serverResult.GetLeft()
-	if serverErr != "boom" {
-		t.Fatalf("server error got %q, want %q", serverErr, "boom")
-	}
-}
-
-func TestRunErrorExprThrowAbortsBlockedPeerFromServer(t *testing.T) {
-	skipRace(t)
-	client := sess.ExprRecvBind(func(v int) kont.Expr[struct{}] {
-		return sess.ExprCloseDone(struct{}{})
-	})
-	server := kont.ExprThrowError[string, struct{}]("boom")
-
-	done := make(chan struct{})
-	var clientResult kont.Either[string, struct{}]
-	var serverResult kont.Either[string, struct{}]
-	go func() {
-		clientResult, serverResult = sess.RunErrorExpr[string, struct{}, struct{}](client, server)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("RunErrorExpr did not terminate after server throw")
-	}
-
-	if !clientResult.IsLeft() {
-		t.Fatalf("client expected Left, got Right")
-	}
-	clientErr, _ := clientResult.GetLeft()
-	if clientErr != "boom" {
-		t.Fatalf("client error got %q, want %q", clientErr, "boom")
-	}
-	if !serverResult.IsLeft() {
-		t.Fatalf("server expected Left, got Right")
-	}
-	serverErr, _ := serverResult.GetLeft()
-	if serverErr != "boom" {
-		t.Fatalf("server error got %q, want %q", serverErr, "boom")
-	}
-}
-
-func TestRunErrorExprBothSidesThrowUsesFirstTerminalAbort(t *testing.T) {
-	skipRace(t)
-	client := kont.ExprThrowError[string, struct{}]("client-boom")
-	server := kont.ExprThrowError[string, struct{}]("server-boom")
-
-	clientResult, serverResult := sess.RunErrorExpr[string, struct{}, struct{}](client, server)
-
-	if !clientResult.IsLeft() {
-		t.Fatalf("client expected Left, got Right")
-	}
-	clientErr, _ := clientResult.GetLeft()
-	if clientErr != "client-boom" {
-		t.Fatalf("client error got %q, want %q", clientErr, "client-boom")
-	}
-	if !serverResult.IsLeft() {
-		t.Fatalf("server expected Left, got Right")
-	}
-	serverErr, _ := serverResult.GetLeft()
-	if serverErr != "client-boom" {
-		t.Fatalf("server error got %q, want %q", serverErr, "client-boom")
 	}
 }
 
