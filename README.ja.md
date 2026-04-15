@@ -15,7 +15,7 @@
 
 `sess` はセッション型を [kont](https://code.hybscloud.com/kont) エフェクトシステムで評価される代数的エフェクトとしてエンコードします。各プロトコルステップ — 送信、受信、選択、提供、クローズ — はトランスポートが操作を完了するまで計算を中断するエフェクトです。トランスポートは計算境界で `iox.ErrWouldBlock` を返し、proactor イベントループ（例：`io_uring`）がスレッドをブロックせずに実行を多重化できるようにします。
 
-2つの等価な API：Cont（クロージャベース、直接的な合成）と Expr（フレームベース、ホットパス向けの償却ゼロアロケーション）。
+等価な API ファミリは 2 つあります。Cont（クロージャベースで合成しやすい）と Expr（フレームベースで、ホットパス向けに償却ゼロアロケーション）です。
 
 ## インストール
 
@@ -37,7 +37,9 @@ Go 1.26+ が必要です。
 
 ## 使い方
 
-プロトタイピングおよび検証には `Run` を使用します。外部管理されるエンドポイントには `Exec` を使用します。ステッピング制御が必要な場合、またはホットパスにおけるアロケーションのオーバーヘッドを最小化する場合は、Expr API（`RunExpr`/`ExecExpr`）を使用します。
+プロトコルの試作と検証には `Run` を使用します。外部管理のエンドポイントには `Exec`
+を使用します。ステッピング制御が必要な場合や、ホットパスでのアロケーションオーバーヘッドを最小化したい場合は Expr API（
+`RunExpr`/`ExecExpr`）を使用します。
 
 ### 送受信
 
@@ -110,12 +112,34 @@ susp = nextSusp
 
 ### エラー処理
 
-セッションプロトコルをエラーエフェクトと合成します。`Throw` はプロトコルを即座に短絡し、保留中のサスペンションを破棄します。
+セッションプロトコルをエラーエフェクトと合成できます。`Throw` は対になった実行を即座に中断します。返される `thrown`
+はセッション全体における未捕捉 `Throw` の原因なので、peer 側の `Either` を解釈する前に確認してください。
 
 ```go
-clientResult, serverResult := sess.RunError[string, string, string](client, server)
-// Either[string, string]: 成功時は Right、Throw 時は Left
+client := kont.ExprThrowError[string, string]("boom")
+server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
+	return sess.ExprCloseDone("recv: " + v)
+})
+
+clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
+if thrown != nil {
+	// セッション全体の中断。
+	fmt.Println("session aborted:", *thrown)
+	// 相手側の Either はまだローカルに未解決のことがあります。
+	_ = clientResult
+	_ = serverResult
+	return
+}
+
+// 未捕捉のセッション全体 Throw はなし。両方の Either が最終的なローカル結果です。
+fmt.Println(clientResult, serverResult)
 ```
+
+要点:
+
+- `thrown == nil` のとき、両方の `Either` は最終的なローカル結果です。
+- `thrown != nil` のとき、対になった実行はセッション全体として中断されています。`*thrown` が未捕捉 `Throw` であり、peer 側の
+  `Either` はまだ未解決のことがあります。
 
 ## 実行モデル
 

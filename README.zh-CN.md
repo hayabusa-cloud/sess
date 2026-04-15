@@ -15,7 +15,7 @@
 
 `sess` 将会话类型编码为由 [kont](https://code.hybscloud.com/kont) 效果系统求值的代数效果。每个协议步骤 — 发送、接收、选择、提供、关闭 — 是一个效果，它会挂起计算直到传输层完成操作。传输层在计算边界返回 `iox.ErrWouldBlock`，允许 proactor 事件循环（如 `io_uring`）在不阻塞线程的情况下多路复用执行。
 
-两种等价的 API：Cont（基于闭包，直接组合）和 Expr（基于帧，热路径的摊销零分配）。
+提供两组等价的 API：Cont（基于闭包，便于直接组合）和 Expr（基于帧，在热路径上实现摊销零分配）。
 
 ## 安装
 
@@ -37,7 +37,8 @@ go get code.hybscloud.com/sess
 
 ## 用法
 
-使用 `Run` 进行协议原型设计与验证。对于外部管理的端点，使用 `Exec`。当需要步进控制或在热路径上最小化分配开销时，使用 Expr API（`RunExpr`/`ExecExpr`）。
+使用 `Run` 进行协议原型设计与验证。对外部管理的端点使用 `Exec`。当需要步进控制，或希望在热路径上尽量减少分配开销时，使用
+Expr API（`RunExpr`/`ExecExpr`）。
 
 ### 收发
 
@@ -110,12 +111,33 @@ susp = nextSusp
 
 ### 错误处理
 
-将会话协议与错误效果组合。`Throw` 立即短路协议并丢弃挂起的暂停。
+可以将会话协议与错误效果组合。`Throw` 会立即中止成对执行。返回的 `thrown` 是会话级未捕获 `Throw` 的全局原因；在解释对端
+`Either` 之前应先检查它。
 
 ```go
-clientResult, serverResult := sess.RunError[string, string, string](client, server)
-// Either[string, string]: 成功时为 Right，Throw 时为 Left
+client := kont.ExprThrowError[string, string]("boom")
+server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
+	return sess.ExprCloseDone("recv: " + v)
+})
+
+clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
+if thrown != nil {
+	// 会话整体已中止。
+	fmt.Println("session aborted:", *thrown)
+	// 对端 Either 仍可能在本地尚未解析完成。
+	_ = clientResult
+	_ = serverResult
+	return
+}
+
+// 没有未捕获的全局 Throw：两个 Either 都是最终的本地结果。
+fmt.Println(clientResult, serverResult)
 ```
+
+简述：
+
+- `thrown == nil`：两个 `Either` 都是最终的本地结果。
+- `thrown != nil`：成对执行已经全局中止；`*thrown` 就是未捕获的 `Throw`，而对端 `Either` 仍可能尚未解析。
 
 ## 执行模型
 
