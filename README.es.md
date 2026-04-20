@@ -7,18 +7,27 @@
 
 # sess
 
-Protocolos de comunicacion con tipos de sesion via efectos algebraicos sobre [kont](https://code.hybscloud.com/kont).
+Protocolos de comunicación con tipos de sesión mediante efectos algebraicos
+sobre [kont](https://code.hybscloud.com/kont).
 
-## Descripcion General
+## Descripción general
 
-Los tipos de sesion asignan un tipo a cada paso de un protocolo de comunicacion. Cada operacion — enviar, recibir, seleccionar, ofrecer, cerrar — tiene tipos seguros individualmente mediante genericos de Go, y la composicion de protocolos dentro de un mismo endpoint es segura en tipos. La dualidad (correspondencia de operaciones entre endpoints) es responsabilidad del programador: el programador escribe protocolos duales, y las discrepancias se manifiestan en tiempo de ejecucion como fallos de asercion de tipo o deadlocks.
+Los tipos de sesión asignan un tipo a cada paso de un protocolo de comunicación. Cada operación —enviar, recibir,
+seleccionar, ofrecer, cerrar— está individualmente bien tipada gracias a los genéricos de Go, y la composición de
+protocolos dentro de un mismo endpoint es segura en tipos. La dualidad (la correspondencia de operaciones entre
+endpoints) es responsabilidad del programador: es él quien escribe los protocolos duales y las discrepancias se
+manifiestan en tiempo de ejecución como fallos de aserción de tipo o interbloqueos.
 
-`sess` codifica los tipos de sesion como efectos algebraicos evaluados por el sistema de efectos [kont](https://code.hybscloud.com/kont). Cada paso del protocolo — enviar, recibir, seleccionar, ofrecer, cerrar — es un efecto que suspende la computacion hasta que el transporte completa la operacion. El transporte retorna `iox.ErrWouldBlock` en las fronteras computacionales, permitiendo a los bucles de eventos proactor (ej., `io_uring`) multiplexar la ejecucion sin bloquear hilos.
+`sess` codifica los tipos de sesión como efectos algebraicos evaluados por el sistema de
+efectos [kont](https://code.hybscloud.com/kont). Cada paso del protocolo —enviar, recibir, seleccionar, ofrecer, cerrar—
+es un efecto que suspende la computación hasta que el transporte completa la operación. El transporte devuelve
+`iox.ErrWouldBlock` en las fronteras de cómputo, lo que permite a los bucles de eventos proactor (p. ej. `io_uring`)
+multiplexar la ejecución sin bloquear hilos.
 
-Hay dos familias de API equivalentes: Cont (basada en closures y de composicion directa) y Expr (basada en frames, con
-cero asignaciones amortizadas para rutas criticas).
+Hay dos familias de API equivalentes: Cont (basada en closures, fácil de componer) y Expr (basada en marcos, con cero
+asignaciones amortizadas en las rutas críticas).
 
-## Instalacion
+## Instalación
 
 ```bash
 go get code.hybscloud.com/sess
@@ -26,25 +35,25 @@ go get code.hybscloud.com/sess
 
 Requiere Go 1.26+.
 
-## Operaciones de Sesion
+## Operaciones de sesión
 
-Cada operacion tiene un dual. Cuando un endpoint realiza una operacion, el otro debe realizar su dual.
+Cada operación tiene un dual. Cuando un endpoint realiza una operación, el otro debe realizar su dual.
 
-| Operacion | Dual | ¿Suspende? |
-|-----------|------|------------|
-| `Send[T]` — enviar un valor | `Recv[T]` — recibir un valor | `iox.ErrWouldBlock` |
-| `SelectL` / `SelectR` — elegir una rama | `Offer` — seguir la eleccion del par | `iox.ErrWouldBlock` |
-| `Close` — finalizar la sesion | `Close` | Nunca |
+| Operación                               | Dual                                 | ¿Suspende?          |
+|-----------------------------------------|--------------------------------------|---------------------|
+| `Send[T]` — enviar un valor             | `Recv[T]` — recibir un valor         | `iox.ErrWouldBlock` |
+| `SelectL` / `SelectR` — elegir una rama | `Offer` — seguir la elección del par | `iox.ErrWouldBlock` |
+| `Close` — finalizar la sesión           | `Close`                              | Nunca               |
 
 ## Uso
 
 Use `Run` para prototipar y validar protocolos. Use `Exec` con endpoints administrados externamente. Use la API Expr (
-`RunExpr`/`ExecExpr`) cuando necesite control de stepping o quiera minimizar la sobrecarga de asignacion en rutas
-criticas.
+`RunExpr`/`ExecExpr`) cuando necesite control paso a paso o quiera minimizar la sobrecarga de asignación en rutas
+críticas.
 
-### Envio y Recepcion
+### Envío y recepción
 
-Un lado envia un valor; el lado dual lo recibe.
+Un lado envía un valor; el lado dual lo recibe.
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
@@ -56,9 +65,9 @@ a, b := sess.Run(client, server) // "ok", "got 42"
 
 Equivalente Expr: `ExprSendThen`, `ExprRecvBind`, `ExprCloseDone`, `RunExpr`.
 
-### Ramificacion
+### Ramificación
 
-Un lado selecciona una rama; el lado dual ofrece ambas ramas y sigue la seleccion.
+Un lado selecciona una rama; el lado dual ofrece ambas ramas y sigue la selección.
 
 ```go
 client := sess.SelectLThen(sess.SendThen(1, sess.CloseDone("left")))
@@ -73,9 +82,9 @@ server := sess.OfferBranch(
 a, b := sess.Run(client, server)
 ```
 
-### Protocolos Recursivos
+### Protocolos recursivos
 
-Los protocolos que se repiten usan `Loop` con `Either`: `Left` continua el bucle, `Right` termina.
+Los protocolos repetitivos usan `Loop` con `Either`: `Left` continúa el bucle, `Right` lo termina.
 
 ```go
 counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
@@ -86,9 +95,9 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 })
 ```
 
-### Delegacion
+### Delegación
 
-Transfiera un endpoint a un tercero enviandolo; acepte la delegacion recibiendolo.
+Transfiera un endpoint a un tercero enviándolo; acepte la delegación recibiéndolo.
 
 ```go
 delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
@@ -97,98 +106,145 @@ acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
 })
 ```
 
-### Paso a Paso
+### Paso a paso
 
-Para bucles de eventos proactor (ej., `io_uring`), `Step` y `Advance` evaluan un efecto a la vez. A diferencia de `Run` y `Exec` — que esperan sincronamente el progreso — la API de stepping devuelve `iox.ErrWouldBlock` al llamador, permitiendo al bucle de eventos reprogramar.
+Para bucles de eventos proactor (p. ej. `io_uring`), `Step` y `Advance` evalúan un efecto a la vez. A diferencia de
+`Run` y `Exec` —que esperan los progresos de forma síncrona—, la API de stepping devuelve `iox.ErrWouldBlock` al
+llamador, permitiendo al bucle de eventos reprogramar.
 
 ```go
 ep, _ := sess.New()
 protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
 _, susp := sess.Step[struct{}](protocol)
-// In a proactor event loop (e.g., io_uring), yield on boundary:
+// En un bucle de eventos proactor (p. ej. io_uring), ceder en la frontera:
 _, nextSusp, err := sess.Advance(ep, susp)
 if err != nil {
-    return susp // yield to event loop, reschedule when ready
+    return susp // ceder al bucle de eventos; reprogramar cuando esté listo
 }
 susp = nextSusp
 ```
 
-### Manejo de Errores
+### Manejo de errores
 
-Componga protocolos de sesion con efectos de error. `Throw` aborta inmediatamente la ejecucion emparejada. El valor
-`thrown` devuelto es la causa global no capturada del `Throw`; reviselo antes de interpretar el `Either` del par.
+Componga protocolos de sesión con efectos de error. `Throw` aborta de inmediato la ejecución emparejada. El valor
+`thrown` devuelto es la causa global de un `Throw` no capturado; revíselo antes de interpretar el `Either` del par.
 
 ```go
 client := kont.ExprThrowError[string, string]("boom")
 server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
-	return sess.ExprCloseDone("recv: " + v)
+return sess.ExprCloseDone("recv: " + v)
 })
 
 clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
 if thrown != nil {
-	// Aborto global de la sesion.
-	fmt.Println("session aborted:", *thrown)
-	// El Either del par aun puede seguir sin resolverse localmente.
-	_ = clientResult
-	_ = serverResult
-	return
+// Aborto global de la sesión.
+fmt.Println("session aborted:", *thrown)
+// El Either del par puede seguir aún sin resolverse localmente.
+_ = clientResult
+_ = serverResult
+return
 }
 
 // Sin Throw global no capturado: ambos Either son resultados locales finales.
 fmt.Println(clientResult, serverResult)
 ```
 
-En breve:
+En resumen:
 
 - `thrown == nil`: ambos valores `Either` son resultados locales finales.
-- `thrown != nil`: la ejecucion emparejada aborto globalmente; `*thrown` es el `Throw` no capturado y el `Either` del
-  par aun puede seguir sin resolverse.
+- `thrown != nil`: la ejecución emparejada se abortó globalmente; `*thrown` es el `Throw` no capturado y el `Either` del
+  par puede seguir aún sin resolverse.
 
-## Modelo de Ejecucion
+## Modelo de ejecución
 
-| Funcion | Descripcion |
-|---------|-------------|
-| `Run` / `RunExpr` | Ejecutar ambos lados en un goroutine — crea un par de endpoints internamente |
-| `Exec` / `ExecExpr` | Ejecutar un lado en un endpoint pre-creado |
-| `Step` + `Advance` | Evalua un efecto a la vez, para bucles de eventos externos |
+| Función             | Descripción                                                                  |
+|---------------------|------------------------------------------------------------------------------|
+| `Run` / `RunExpr`   | Ejecuta ambos lados en una goroutine — crea internamente un par de endpoints |
+| `Exec` / `ExecExpr` | Ejecuta un lado sobre un endpoint precreado                                  |
+| `Step` + `Advance`  | Evalúa un efecto a la vez, para bucles de eventos externos                   |
 
-**Cont vs Expr**: Cont se basa en closures y es sencillo de componer. Expr se basa en marcos con cero asignaciones amortizadas, adecuado para rutas criticas.
+**Cont vs Expr**: Cont se basa en closures y es sencillo de componer. Expr se basa en marcos con cero asignaciones
+amortizadas, adecuado para rutas críticas.
 
 ## Contrato
 
-`sess` expone una API de transporte orientada a llamadores de confianza. Cada endpoint esta pensado para ser usado por
-un solo goroutine a la vez, y la ruta critica omite deliberadamente las verificaciones de uso concurrente y las
-comprobaciones despues de `Close`.
+`sess` expone una API de transporte orientada a llamadores de confianza. Cada endpoint está pensado para ser usado por
+una sola goroutine a la vez, y la ruta crítica omite deliberadamente las verificaciones de uso concurrente y las
+comprobaciones después de `Close`.
 
-Si el tipo de la carga es una interfaz, el valor debe seguir llevando un tipo dinamico concreto. Los valores de interfaz
-nil, como `any(nil)` o `error(nil)`, quedan fuera del contrato; si nil tiene significado semantico, use un valor nil de
-un tipo concreto o encapsulelo explicitamente.
+Si el tipo de la carga útil es una interfaz, el valor debe seguir portando un tipo dinámico concreto. Los valores de
+interfaz nil como `any(nil)` o `error(nil)` quedan fuera del contrato; si nil tiene significado semántico, use un valor
+nil de un tipo concreto o un envoltorio explícito.
 
 ## API
 
-| Categoria | Cont | Expr |
-|-----------|------|------|
-| Constructores | `SendThen`, `RecvBind`, `CloseDone`, `SelectLThen`, `SelectRThen`, `OfferBranch` | `ExprSendThen`, `ExprRecvBind`, `ExprCloseDone`, `ExprSelectLThen`, `ExprSelectRThen`, `ExprOfferBranch` |
-| Recursion | `Loop` | `ExprLoop` |
-| Ejecucion | `Exec`, `Run` | `ExecExpr`, `RunExpr` |
-| Ejecucion con errores | `ExecError`, `RunError` | `ExecErrorExpr`, `RunErrorExpr` |
-| Paso a paso | | `Step`, `Advance`, `StepError`, `AdvanceError` |
-| Puente | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
-| Transporte | `New` → `(*Endpoint, *Endpoint)` | |
+| Categoría             | Cont                                                                             | Expr                                                                                                     |
+|-----------------------|----------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
+| Constructores         | `SendThen`, `RecvBind`, `CloseDone`, `SelectLThen`, `SelectRThen`, `OfferBranch` | `ExprSendThen`, `ExprRecvBind`, `ExprCloseDone`, `ExprSelectLThen`, `ExprSelectRThen`, `ExprOfferBranch` |
+| Recursión             | `Loop`                                                                           | `ExprLoop`                                                                                               |
+| Ejecución             | `Exec`, `Run`                                                                    | `ExecExpr`, `RunExpr`                                                                                    |
+| Ejecución con errores | `ExecError`, `RunError`                                                          | `ExecErrorExpr`, `RunErrorExpr`                                                                          |
+| Paso a paso           |                                                                                  | `Step`, `Advance`, `StepError`, `AdvanceError`                                                           |
+| Puente                | `Reify` (Cont→Expr), `Reflect` (Expr→Cont)                                       |                                                                                                          |
+| Transporte            | `New` → `(*Endpoint, *Endpoint)`                                                 |                                                                                                          |
 
-## References
+## Patrones prácticos
 
-- Kohei Honda. "Types for Dyadic Interaction." In *CONCUR 1993* (LNCS 715), pp. 509-523. Springer, 1993. https://doi.org/10.1007/3-540-57208-2_35
-- Kohei Honda, Vasco T. Vasconcelos, Makoto Kubo. "Language Primitives and Type Discipline for Structured Communication-Based Programming." In *ESOP 1998* (LNCS 1381), pp. 122-138. Springer, 1998. https://doi.org/10.1007/BFb0053567
-- Philip Wadler. "Propositions as Sessions." *Journal of Functional Programming* 24(2-3):384-418, 2014. https://doi.org/10.1017/S095679681400001X
-- Dominic A. Orchard, Nobuko Yoshida. "Effects as Sessions, Sessions as Effects." In *POPL 2016*, pp. 568-581. https://doi.org/10.1145/2837614.2837634
-- Sam Lindley, J. Garrett Morris. "Lightweight Functional Session Types." In *Behavioural Types: From Theory to Tools*, pp. 265-286, 2017 (first published year; DOI metadata date is 2022-09-01). https://doi.org/10.1201/9781003337331-12
-- Simon Fowler, Sam Lindley, J. Garrett Morris, Sara Decova. "Exceptional Asynchronous Session Types: Session Types without Tiers." *Proc. ACM Program. Lang.* 3(POPL):28:1-28:29, 2019. https://doi.org/10.1145/3290341
+Una sesión completa de extremo a extremo combina típicamente la creación de endpoints, la evaluación paso a paso y la
+ejecución con manejo de errores:
+
+```go
+// 1. Crear un par de endpoints de sesión (client, server).
+client, server := sess.New()
+
+// 2. Definir el protocolo en cada lado usando las operaciones duales.
+clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
+    func(reply string) kont.Expr[string] {
+        return sess.ExprCloseDone(reply)
+    },
+))
+serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+    return sess.ExprSendThen(
+        fmt.Sprintf("got %d", n),
+        sess.ExprCloseDone[string]("ok"),
+    )
+})
+
+// 3. Avanzar ambos lados al unísono con manejo de errores.
+type Err struct{ Reason string }
+left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+if thrown != nil {
+    // La sesión se abortó; left/right pueden contener solo resultados parciales.
+    _ = thrown
+}
+_ = left; _ = right
+```
+
+Para integración con un proactor, sustituya `RunErrorExpr` por `StepError` / `AdvanceError`: la suspensión cede cada vez
+que el transporte subyacente devuelve `iox.ErrWouldBlock`, y el bucle la reanuda cuando el endpoint correspondiente
+completa. La misma frontera `client, server := sess.New()` se reutiliza —lo que cambia es quién conduce cada paso.
+
+## Referencias
+
+- Kohei Honda. 1993. Types for Dyadic Interaction. In *Proc. 4th International Conference on Concurrency Theory (
+  CONCUR '93)*. LNCS 715, 509–523. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, and Makoto Kubo. 1998. Language Primitives and Type Discipline for Structured
+  Communication-Based Programming. In *Proc. 7th European Symposium on Programming (ESOP '98)*. LNCS 1381,
+  122–138. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. 2014. Propositions as Sessions. *Journal of Functional Programming* 24, 2-3 (2014),
+  384–418. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard and Nobuko Yoshida. 2016. Effects as Sessions, Sessions as Effects. In *Proc. 43rd Annual ACM
+  SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL '16)*.
+  568–581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley and J. Garrett Morris. 2022. Lightweight Functional Session Types. In *Behavioural Types: From Theory to
+  Tools*. 265–286. https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, and Sára Decova. 2019. Exceptional Asynchronous Session Types: Session
+  Types without Tiers. *Proc. ACM Program. Lang.* 3, POPL (Jan. 2019), 1–29. https://doi.org/10.1145/3290341
 
 ## Dependencias
 
 - [code.hybscloud.com/kont](https://code.hybscloud.com/kont) — Continuaciones delimitadas y efectos algebraicos
-- [code.hybscloud.com/iox](https://code.hybscloud.com/iox) — Semantica no bloqueante (`ErrWouldBlock`, `Backoff`)
+- [code.hybscloud.com/iox](https://code.hybscloud.com/iox) — Semántica no bloqueante (`ErrWouldBlock`, `Backoff`)
 - [code.hybscloud.com/lfq](https://code.hybscloud.com/lfq) — Colas FIFO sin bloqueo
 
 ## Licencia
