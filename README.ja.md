@@ -118,17 +118,17 @@ susp = nextSusp
 ```go
 client := kont.ExprThrowError[string, string]("boom")
 server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
-	return sess.ExprCloseDone("recv: " + v)
+return sess.ExprCloseDone("recv: " + v)
 })
 
 clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
 if thrown != nil {
-	// セッション全体の中断。
-	fmt.Println("session aborted:", *thrown)
-	// 相手側の Either はまだローカルに未解決のことがあります。
-	_ = clientResult
-	_ = serverResult
-	return
+// セッション全体の中断。
+fmt.Println("session aborted:", *thrown)
+// 相手側の Either はまだローカルに未解決のことがあります。
+_ = clientResult
+_ = serverResult
+return
 }
 
 // 未捕捉のセッション全体 Throw はなし。両方の Either が最終的なローカル結果です。
@@ -171,14 +171,57 @@ nil インタフェース値は契約外です。nil 自体に意味がある場
 | ブリッジ | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | トランスポート | `New` → `(*Endpoint, *Endpoint)` | |
 
-## References
+## 実用レシピ
 
-- Kohei Honda. "Types for Dyadic Interaction." In *CONCUR 1993* (LNCS 715), pp. 509-523. Springer, 1993. https://doi.org/10.1007/3-540-57208-2_35
-- Kohei Honda, Vasco T. Vasconcelos, Makoto Kubo. "Language Primitives and Type Discipline for Structured Communication-Based Programming." In *ESOP 1998* (LNCS 1381), pp. 122-138. Springer, 1998. https://doi.org/10.1007/BFb0053567
-- Philip Wadler. "Propositions as Sessions." *Journal of Functional Programming* 24(2-3):384-418, 2014. https://doi.org/10.1017/S095679681400001X
-- Dominic A. Orchard, Nobuko Yoshida. "Effects as Sessions, Sessions as Effects." In *POPL 2016*, pp. 568-581. https://doi.org/10.1145/2837614.2837634
-- Sam Lindley, J. Garrett Morris. "Lightweight Functional Session Types." In *Behavioural Types: From Theory to Tools*, pp. 265-286, 2017 (first published year; DOI metadata date is 2022-09-01). https://doi.org/10.1201/9781003337331-12
-- Simon Fowler, Sam Lindley, J. Garrett Morris, Sara Decova. "Exceptional Asynchronous Session Types: Session Types without Tiers." *Proc. ACM Program. Lang.* 3(POPL):28:1-28:29, 2019. https://doi.org/10.1145/3290341
+エンドツーエンドのセッションは通常、エンドポイント生成、ステッピング、エラーを考慮した実行の三つを組み合わせます：
+
+```go
+// 1. セッションのエンドポイント対（client, server）を生成する。
+client, server := sess.New()
+
+// 2. 双対操作を用いて両側のプロトコルを定義する。
+clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
+    func(reply string) kont.Expr[string] {
+        return sess.ExprCloseDone(reply)
+    },
+))
+serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+    return sess.ExprSendThen(
+        fmt.Sprintf("got %d", n),
+        sess.ExprCloseDone[string]("ok"),
+    )
+})
+
+// 3. 両側を歩調を合わせて駆動し、エラーを処理する。
+type Err struct{ Reason string }
+left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+if thrown != nil {
+    // セッションが中断された。left/right には部分結果しか含まれない場合がある。
+    _ = thrown
+}
+_ = left; _ = right
+```
+
+プロアクター統合では `RunErrorExpr` を `StepError` / `AdvanceError` に差し替えます。下層トランスポートが
+`iox.ErrWouldBlock` を返すたびに中断がイールドし、対応するエンドポイントが完了したときにループが再開します。
+`client, server := sess.New()` という境界はそのまま再利用され、変わるのはステップを駆動する主体だけです。
+
+## 参考文献
+
+- Kohei Honda. 1993. Types for Dyadic Interaction. In *Proc. 4th International Conference on Concurrency Theory (
+  CONCUR '93)*. LNCS 715, 509–523. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, and Makoto Kubo. 1998. Language Primitives and Type Discipline for Structured
+  Communication-Based Programming. In *Proc. 7th European Symposium on Programming (ESOP '98)*. LNCS 1381,
+  122–138. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. 2014. Propositions as Sessions. *Journal of Functional Programming* 24, 2-3 (2014),
+  384–418. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard and Nobuko Yoshida. 2016. Effects as Sessions, Sessions as Effects. In *Proc. 43rd Annual ACM
+  SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL '16)*.
+  568–581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley and J. Garrett Morris. 2022. Lightweight Functional Session Types. In *Behavioural Types: From Theory to
+  Tools*. 265–286. https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, and Sára Decova. 2019. Exceptional Asynchronous Session Types: Session
+  Types without Tiers. *Proc. ACM Program. Lang.* 3, POPL (Jan. 2019), 1–29. https://doi.org/10.1145/3290341
 
 ## 依存関係
 

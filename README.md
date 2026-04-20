@@ -174,14 +174,60 @@ type or wrap it explicitly.
 | Bridge | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | Transport | `New` → `(*Endpoint, *Endpoint)` | |
 
+## Practical Recipes
+
+A full end-to-end session typically combines endpoint creation,
+stepping, and error-aware execution:
+
+```go
+// 1. Create a session endpoint pair (client, server).
+client, server := sess.New()
+
+// 2. Define the protocol on each side using the dual operations.
+clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
+    func(reply string) kont.Expr[string] {
+        return sess.ExprCloseDone(reply)
+    },
+))
+serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+    return sess.ExprSendThen(
+        fmt.Sprintf("got %d", n),
+        sess.ExprCloseDone[string]("ok"),
+    )
+})
+
+// 3. Run both sides in lockstep with error handling.
+type Err struct{ Reason string }
+left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+if thrown != nil {
+    // The session aborted; left/right may carry only partial results.
+    _ = thrown
+}
+_ = left; _ = right
+```
+
+For proactor integration, swap `RunErrorExpr` for `StepError` /
+`AdvanceError`: the suspension yields whenever the underlying transport
+returns `iox.ErrWouldBlock`, and the loop resumes it when the matching
+endpoint completes. The same `client, server := sess.New()` boundary is
+reused — what changes is who drives the step.
+
 ## References
 
-- Kohei Honda. "Types for Dyadic Interaction." In *CONCUR 1993* (LNCS 715), pp. 509-523. Springer, 1993. https://doi.org/10.1007/3-540-57208-2_35
-- Kohei Honda, Vasco T. Vasconcelos, Makoto Kubo. "Language Primitives and Type Discipline for Structured Communication-Based Programming." In *ESOP 1998* (LNCS 1381), pp. 122-138. Springer, 1998. https://doi.org/10.1007/BFb0053567
-- Philip Wadler. "Propositions as Sessions." *Journal of Functional Programming* 24(2-3):384-418, 2014. https://doi.org/10.1017/S095679681400001X
-- Dominic A. Orchard, Nobuko Yoshida. "Effects as Sessions, Sessions as Effects." In *POPL 2016*, pp. 568-581. https://doi.org/10.1145/2837614.2837634
-- Sam Lindley, J. Garrett Morris. "Lightweight Functional Session Types." In *Behavioural Types: From Theory to Tools*, pp. 265-286, 2017 (first published year; DOI metadata date is 2022-09-01). https://doi.org/10.1201/9781003337331-12
-- Simon Fowler, Sam Lindley, J. Garrett Morris, Sara Decova. "Exceptional Asynchronous Session Types: Session Types without Tiers." *Proc. ACM Program. Lang.* 3(POPL):28:1-28:29, 2019. https://doi.org/10.1145/3290341
+- Kohei Honda. 1993. Types for Dyadic Interaction. In *Proc. 4th International Conference on Concurrency Theory (
+  CONCUR '93)*. LNCS 715, 509–523. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, and Makoto Kubo. 1998. Language Primitives and Type Discipline for Structured
+  Communication-Based Programming. In *Proc. 7th European Symposium on Programming (ESOP '98)*. LNCS 1381,
+  122–138. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. 2014. Propositions as Sessions. *Journal of Functional Programming* 24, 2-3 (2014),
+  384–418. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard and Nobuko Yoshida. 2016. Effects as Sessions, Sessions as Effects. In *Proc. 43rd Annual ACM
+  SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL '16)*.
+  568–581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley and J. Garrett Morris. 2022. Lightweight Functional Session Types. In *Behavioural Types: From Theory to
+  Tools*. 265–286. https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, and Sára Decova. 2019. Exceptional Asynchronous Session Types: Session
+  Types without Tiers. *Proc. ACM Program. Lang.* 3, POPL (Jan. 2019), 1–29. https://doi.org/10.1145/3290341
 
 ## Dependencies
 

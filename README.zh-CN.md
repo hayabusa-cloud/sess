@@ -117,17 +117,17 @@ susp = nextSusp
 ```go
 client := kont.ExprThrowError[string, string]("boom")
 server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
-	return sess.ExprCloseDone("recv: " + v)
+return sess.ExprCloseDone("recv: " + v)
 })
 
 clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
 if thrown != nil {
-	// 会话整体已中止。
-	fmt.Println("session aborted:", *thrown)
-	// 对端 Either 仍可能在本地尚未解析完成。
-	_ = clientResult
-	_ = serverResult
-	return
+// 会话整体已中止。
+fmt.Println("session aborted:", *thrown)
+// 对端 Either 仍可能在本地尚未解析完成。
+_ = clientResult
+_ = serverResult
+return
 }
 
 // 没有未捕获的全局 Throw：两个 Either 都是最终的本地结果。
@@ -169,14 +169,56 @@ nil 本身具有语义，请使用带具体类型的 nil 值，或显式包一�
 | 桥接 | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | 传输 | `New` → `(*Endpoint, *Endpoint)` | |
 
-## References
+## 实用范式
 
-- Kohei Honda. "Types for Dyadic Interaction." In *CONCUR 1993* (LNCS 715), pp. 509-523. Springer, 1993. https://doi.org/10.1007/3-540-57208-2_35
-- Kohei Honda, Vasco T. Vasconcelos, Makoto Kubo. "Language Primitives and Type Discipline for Structured Communication-Based Programming." In *ESOP 1998* (LNCS 1381), pp. 122-138. Springer, 1998. https://doi.org/10.1007/BFb0053567
-- Philip Wadler. "Propositions as Sessions." *Journal of Functional Programming* 24(2-3):384-418, 2014. https://doi.org/10.1017/S095679681400001X
-- Dominic A. Orchard, Nobuko Yoshida. "Effects as Sessions, Sessions as Effects." In *POPL 2016*, pp. 568-581. https://doi.org/10.1145/2837614.2837634
-- Sam Lindley, J. Garrett Morris. "Lightweight Functional Session Types." In *Behavioural Types: From Theory to Tools*, pp. 265-286, 2017 (first published year; DOI metadata date is 2022-09-01). https://doi.org/10.1201/9781003337331-12
-- Simon Fowler, Sam Lindley, J. Garrett Morris, Sara Decova. "Exceptional Asynchronous Session Types: Session Types without Tiers." *Proc. ACM Program. Lang.* 3(POPL):28:1-28:29, 2019. https://doi.org/10.1145/3290341
+一次完整的端到端会话通常会结合端点创建、单步推进与带错误处理的执行三者：
+
+```go
+// 1. 创建一对会话端点（client、server）。
+client, server := sess.New()
+
+// 2. 用对偶操作分别定义两侧的协议。
+clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
+func (reply string) kont.Expr[string] {
+return sess.ExprCloseDone(reply)
+},
+))
+serverProg := sess.ExprRecvBind(func (n int) kont.Expr[string] {
+return sess.ExprSendThen(
+fmt.Sprintf("got %d", n),
+sess.ExprCloseDone[string]("ok"),
+)
+})
+
+// 3. 同步推进两侧并处理错误。
+type Err struct{ Reason string }
+left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+if thrown != nil {
+// 会话被中止；left/right 可能仅承载部分结果。
+_ = thrown
+}
+_ = left; _ = right
+```
+
+用于 proactor 集成时，将 `RunErrorExpr` 替换为 `StepError` / `AdvanceError`：每当底层传输返回 `iox.ErrWouldBlock`
+时挂起会让出执行权，事件循环在对端完成时再行恢复。`client, server := sess.New()` 这一边界保持不变——变化的只是由谁来驱动每一步推进。
+
+## 参考文献
+
+- Kohei Honda. 1993. Types for Dyadic Interaction. In *Proc. 4th International Conference on Concurrency Theory (
+  CONCUR '93)*. LNCS 715, 509–523. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, and Makoto Kubo. 1998. Language Primitives and Type Discipline for Structured
+  Communication-Based Programming. In *Proc. 7th European Symposium on Programming (ESOP '98)*. LNCS 1381,
+  122–138. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. 2014. Propositions as Sessions. *Journal of Functional Programming* 24, 2-3 (2014),
+  384–418. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard and Nobuko Yoshida. 2016. Effects as Sessions, Sessions as Effects. In *Proc. 43rd Annual ACM
+  SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL '16)*.
+  568–581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley and J. Garrett Morris. 2022. Lightweight Functional Session Types. In *Behavioural Types: From Theory to
+  Tools*. 265–286. https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, and Sára Decova. 2019. Exceptional Asynchronous Session Types: Session
+  Types without Tiers. *Proc. ACM Program. Lang.* 3, POPL (Jan. 2019), 1–29. https://doi.org/10.1145/3290341
 
 ## 依赖
 
