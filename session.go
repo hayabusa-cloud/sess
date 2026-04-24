@@ -54,7 +54,7 @@ func (h sessionHandler[R]) Dispatch(op kont.Operation) (kont.Resumed, bool) {
 
 // dispatchWait blocks until DispatchSession succeeds, backing off on
 // iox.ErrWouldBlock with iox.Backoff (I/O readiness waiting).
-// Session transport admits only completed progress (nil) or backpressure
+// Session transport admits only completed progress (nil error) or backpressure
 // (iox.ErrWouldBlock). sess does not model iox.ErrMore; any other error is an
 // internal contract violation.
 func dispatchWait(ctx *sessionContext, sop sessionDispatcher) kont.Resumed {
