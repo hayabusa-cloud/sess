@@ -29,11 +29,11 @@ func RunExpr[A, B any](a kont.Expr[A], b kont.Expr[B]) (A, B) {
 
 	var sopA sessionDispatcher
 	if suspA != nil {
-		sopA = suspA.Op().(sessionDispatcher)
+		sopA = runExprSessionDispatcher(suspA.Op())
 	}
 	var sopB sessionDispatcher
 	if suspB != nil {
-		sopB = suspB.Op().(sessionDispatcher)
+		sopB = runExprSessionDispatcher(suspB.Op())
 	}
 
 	for suspA != nil || suspB != nil {
@@ -43,7 +43,7 @@ func RunExpr[A, B any](a kont.Expr[A], b kont.Expr[B]) (A, B) {
 			if err == nil {
 				resultA, suspA = suspA.Resume(v)
 				if suspA != nil {
-					sopA = suspA.Op().(sessionDispatcher)
+					sopA = runExprSessionDispatcher(suspA.Op())
 				}
 				progress = true
 			}
@@ -53,7 +53,7 @@ func RunExpr[A, B any](a kont.Expr[A], b kont.Expr[B]) (A, B) {
 			if err == nil {
 				resultB, suspB = suspB.Resume(v)
 				if suspB != nil {
-					sopB = suspB.Op().(sessionDispatcher)
+					sopB = runExprSessionDispatcher(suspB.Op())
 				}
 				progress = true
 			}
@@ -65,4 +65,12 @@ func RunExpr[A, B any](a kont.Expr[A], b kont.Expr[B]) (A, B) {
 		}
 	}
 	return resultA, resultB
+}
+
+func runExprSessionDispatcher(op kont.Operation) sessionDispatcher {
+	sop, ok := op.(sessionDispatcher)
+	if !ok {
+		panic("sess: unhandled effect in RunExpr")
+	}
+	return sop
 }
