@@ -18,6 +18,12 @@ Session types assign a type to each step of a communication protocol. Each opera
 Two equivalent API families are available: Cont (closure-based, straightforward to compose) and Expr (frame-based,
 amortized zero-allocation for hot paths).
 
+## Composition Boundary
+
+`sess` owns the session effect signature and the endpoint transport that interprets it. It uses `iox.ErrWouldBlock` as
+the non-blocking boundary for bounded queues, but does not own the full `iox` outcome algebra; `takt` owns
+proactor-style scheduling and completion correlation; `cove` owns contextual evidence for suspension-aware composition.
+
 ## Installation
 
 ```bash
@@ -176,14 +182,11 @@ type or wrap it explicitly.
 
 ## Practical Recipes
 
-A full end-to-end session typically combines endpoint creation,
-stepping, and error-aware execution:
+A paired error-aware run defines dual protocols and lets `RunErrorExpr`
+create the endpoint pair internally:
 
 ```go
-// 1. Create a session endpoint pair (client, server).
-client, server := sess.New()
-
-// 2. Define the protocol on each side using the dual operations.
+// 1. Define the protocol on each side using the dual operations.
 clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
     func(reply string) kont.Expr[string] {
         return sess.ExprCloseDone(reply)
@@ -196,7 +199,7 @@ serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
     )
 })
 
-// 3. Run both sides in lockstep with error handling.
+// 2. Run both sides in lockstep with error handling.
 type Err struct{ Reason string }
 left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
 if thrown != nil {
@@ -206,11 +209,10 @@ if thrown != nil {
 _ = left; _ = right
 ```
 
-For proactor integration, swap `RunErrorExpr` for `StepError` /
-`AdvanceError`: the suspension yields whenever the underlying transport
-returns `iox.ErrWouldBlock`, and the loop resumes it when the matching
-endpoint completes. The same `client, server := sess.New()` boundary is
-reused — what changes is who drives the step.
+For proactor integration, create endpoints with `sess.New()` and drive
+`StepError` / `AdvanceError` yourself: the suspension yields whenever the
+underlying transport returns `iox.ErrWouldBlock`, and the loop resumes it when
+the matching endpoint completes.
 
 ## References
 

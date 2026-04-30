@@ -17,6 +17,11 @@
 
 提供两组等价的 API：Cont（基于闭包，便于直接组合）和 Expr（基于帧，在热路径上实现摊销零分配）。
 
+## 组合边界
+
+`sess` 拥有会话效果签名以及解释它的端点传输。它把 `iox.ErrWouldBlock` 用作有界队列上的非阻塞边界，但不拥有完整的 `iox`
+结果代数；`takt` 拥有 proactor 风格的调度和完成事件关联；`cove` 拥有面向挂起组合的上下文证据。
+
 ## 安装
 
 ```bash
@@ -101,10 +106,10 @@ acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
 ep, _ := sess.New()
 protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
 _, susp := sess.Step[struct{}](protocol)
-// In a proactor event loop (e.g., io_uring), yield on boundary:
+// 在 proactor 事件循环（例如 io_uring）中，在边界处让出：
 _, nextSusp, err := sess.Advance(ep, susp)
 if err != nil {
-    return susp // yield to event loop, reschedule when ready
+    return susp // 让出给事件循环，并在就绪后重新调度
 }
 susp = nextSusp
 ```
@@ -117,17 +122,17 @@ susp = nextSusp
 ```go
 client := kont.ExprThrowError[string, string]("boom")
 server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
-return sess.ExprCloseDone("recv: " + v)
+    return sess.ExprCloseDone("recv: " + v)
 })
 
 clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
 if thrown != nil {
-// 会话整体已中止。
-fmt.Println("session aborted:", *thrown)
-// 对端 Either 仍可能在本地尚未解析完成。
-_ = clientResult
-_ = serverResult
-return
+    // 会话整体已中止。
+    fmt.Println("session aborted:", *thrown)
+    // 对端 Either 仍可能在本地尚未解析完成。
+    _ = clientResult
+    _ = serverResult
+    return
 }
 
 // 没有未捕获的全局 Throw：两个 Either 都是最终的本地结果。
@@ -171,37 +176,34 @@ nil 本身具有语义，请使用带具体类型的 nil 值，或显式包一�
 
 ## 实用范式
 
-一次完整的端到端会话通常会结合端点创建、单步推进与带错误处理的执行三者：
+成对的带错误处理执行会定义两侧对偶协议，并让 `RunErrorExpr` 在内部创建端点对：
 
 ```go
-// 1. 创建一对会话端点（client、server）。
-client, server := sess.New()
-
-// 2. 用对偶操作分别定义两侧的协议。
+// 1. 用对偶操作分别定义两侧的协议。
 clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
-func (reply string) kont.Expr[string] {
-return sess.ExprCloseDone(reply)
-},
+    func(reply string) kont.Expr[string] {
+        return sess.ExprCloseDone(reply)
+    },
 ))
-serverProg := sess.ExprRecvBind(func (n int) kont.Expr[string] {
-return sess.ExprSendThen(
-fmt.Sprintf("got %d", n),
-sess.ExprCloseDone[string]("ok"),
-)
+serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+    return sess.ExprSendThen(
+        fmt.Sprintf("got %d", n),
+        sess.ExprCloseDone[string]("ok"),
+    )
 })
 
-// 3. 同步推进两侧并处理错误。
+// 2. 同步推进两侧并处理错误。
 type Err struct{ Reason string }
 left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
 if thrown != nil {
-// 会话被中止；left/right 可能仅承载部分结果。
-_ = thrown
+    // 会话被中止；left/right 可能仅承载部分结果。
+    _ = thrown
 }
 _ = left; _ = right
 ```
 
-用于 proactor 集成时，将 `RunErrorExpr` 替换为 `StepError` / `AdvanceError`：每当底层传输返回 `iox.ErrWouldBlock`
-时挂起会让出执行权，事件循环在对端完成时再行恢复。`client, server := sess.New()` 这一边界保持不变——变化的只是由谁来驱动每一步推进。
+用于 proactor 集成时，请用 `sess.New()` 创建端点，并自行驱动 `StepError` / `AdvanceError`：每当底层传输返回
+`iox.ErrWouldBlock` 时挂起会让出执行权，事件循环在对端完成时再行恢复。
 
 ## 参考文献
 
