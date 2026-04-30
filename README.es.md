@@ -27,6 +27,13 @@ multiplexar la ejecución sin bloquear hilos.
 Hay dos familias de API equivalentes: Cont (basada en closures, fácil de componer) y Expr (basada en marcos, con cero
 asignaciones amortizadas en las rutas críticas).
 
+## Límite de composición
+
+`sess` es dueño de la signatura de efectos de sesión y del transporte de endpoints que la interpreta. Usa
+`iox.ErrWouldBlock` como frontera no bloqueante para colas acotadas, pero no posee el álgebra completa de resultados de
+`iox`; `takt` posee la planificación de estilo proactor y la correlación de finalizaciones; `cove` posee la evidencia
+contextual para composición alrededor de suspensiones.
+
 ## Instalación
 
 ```bash
@@ -132,17 +139,17 @@ Componga protocolos de sesión con efectos de error. `Throw` aborta de inmediato
 ```go
 client := kont.ExprThrowError[string, string]("boom")
 server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
-return sess.ExprCloseDone("recv: " + v)
+    return sess.ExprCloseDone("recv: " + v)
 })
 
 clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
 if thrown != nil {
-// Aborto global de la sesión.
-fmt.Println("session aborted:", *thrown)
-// El Either del par puede seguir aún sin resolverse localmente.
-_ = clientResult
-_ = serverResult
-return
+    // Aborto global de la sesión.
+    fmt.Println("session aborted:", *thrown)
+    // El Either del par puede seguir aún sin resolverse localmente.
+    _ = clientResult
+    _ = serverResult
+    return
 }
 
 // Sin Throw global no capturado: ambos Either son resultados locales finales.
@@ -190,14 +197,11 @@ nil de un tipo concreto o un envoltorio explícito.
 
 ## Patrones prácticos
 
-Una sesión completa de extremo a extremo combina típicamente la creación de endpoints, la evaluación paso a paso y la
-ejecución con manejo de errores:
+Una ejecución emparejada con manejo de errores define protocolos duales y deja que `RunErrorExpr` cree internamente el
+par de endpoints:
 
 ```go
-// 1. Crear un par de endpoints de sesión (client, server).
-client, server := sess.New()
-
-// 2. Definir el protocolo en cada lado usando las operaciones duales.
+// 1. Definir el protocolo en cada lado usando las operaciones duales.
 clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
     func(reply string) kont.Expr[string] {
         return sess.ExprCloseDone(reply)
@@ -210,7 +214,7 @@ serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
     )
 })
 
-// 3. Avanzar ambos lados al unísono con manejo de errores.
+// 2. Avanzar ambos lados al unísono con manejo de errores.
 type Err struct{ Reason string }
 left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
 if thrown != nil {
@@ -220,9 +224,9 @@ if thrown != nil {
 _ = left; _ = right
 ```
 
-Para integración con un proactor, sustituya `RunErrorExpr` por `StepError` / `AdvanceError`: la suspensión cede cada vez
-que el transporte subyacente devuelve `iox.ErrWouldBlock`, y el bucle la reanuda cuando el endpoint correspondiente
-completa. La misma frontera `client, server := sess.New()` se reutiliza —lo que cambia es quién conduce cada paso.
+Para integración con un proactor, cree endpoints con `sess.New()` y conduzca `StepError` / `AdvanceError` directamente:
+la suspensión cede cada vez que el transporte subyacente devuelve `iox.ErrWouldBlock`, y el bucle la reanuda cuando el
+endpoint correspondiente completa.
 
 ## Referencias
 

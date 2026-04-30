@@ -229,3 +229,19 @@ func TestExprDispatchUnhandledPanics(t *testing.T) {
 	}()
 	sess.ExecExpr(ep, kont.ExprPerform(bogus{}))
 }
+
+func TestRunExprUnhandledOperationPanics(t *testing.T) {
+	type bogus struct{ kont.Phantom[int] }
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for unhandled RunExpr operation")
+		}
+		msg, ok := r.(string)
+		if !ok || msg != "sess: unhandled effect in RunExpr" {
+			t.Fatalf("unexpected panic: %v", r)
+		}
+	}()
+	sess.RunExpr[int, struct{}](kont.ExprPerform(bogus{}), sess.ExprCloseDone(struct{}{}))
+}

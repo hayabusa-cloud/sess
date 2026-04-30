@@ -17,6 +17,12 @@
 
 等価な API ファミリは 2 つあります。Cont（クロージャベースで合成しやすい）と Expr（フレームベースで、ホットパス向けに償却ゼロアロケーション）です。
 
+## 合成境界
+
+`sess` はセッションのエフェクトシグネチャと、それを解釈するエンドポイントトランスポートを所有します。有界キュー上のノンブロッキング境界として
+`iox.ErrWouldBlock` を使いますが、`iox` アウトカム代数全体は所有しません。`takt` は proactor 型のスケジューリングと完了相関を所有し、
+`cove` はサスペンションを含む合成のためのコンテキスト証拠を所有します。
+
 ## インストール
 
 ```bash
@@ -102,10 +108,10 @@ proactor イベントループ（例：`io_uring`）向けに、`Step` と `Adva
 ep, _ := sess.New()
 protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
 _, susp := sess.Step[struct{}](protocol)
-// In a proactor event loop (e.g., io_uring), yield on boundary:
+// proactor イベントループ（例: io_uring）では、境界でイールドする:
 _, nextSusp, err := sess.Advance(ep, susp)
 if err != nil {
-    return susp // yield to event loop, reschedule when ready
+    return susp // イベントループへ制御を戻し、準備できたら再スケジュールする
 }
 susp = nextSusp
 ```
@@ -118,17 +124,17 @@ susp = nextSusp
 ```go
 client := kont.ExprThrowError[string, string]("boom")
 server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
-return sess.ExprCloseDone("recv: " + v)
+    return sess.ExprCloseDone("recv: " + v)
 })
 
 clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
 if thrown != nil {
-// セッション全体の中断。
-fmt.Println("session aborted:", *thrown)
-// 相手側の Either はまだローカルに未解決のことがあります。
-_ = clientResult
-_ = serverResult
-return
+    // セッション全体の中断。
+    fmt.Println("session aborted:", *thrown)
+    // 相手側の Either はまだローカルに未解決のことがあります。
+    _ = clientResult
+    _ = serverResult
+    return
 }
 
 // 未捕捉のセッション全体 Throw はなし。両方の Either が最終的なローカル結果です。
@@ -173,13 +179,10 @@ nil インタフェース値は契約外です。nil 自体に意味がある場
 
 ## 実用レシピ
 
-エンドツーエンドのセッションは通常、エンドポイント生成、ステッピング、エラーを考慮した実行の三つを組み合わせます：
+エラーを考慮したペア実行では、双対な両側プロトコルを定義し、`RunErrorExpr` に内部でエンドポイントペアを生成させます：
 
 ```go
-// 1. セッションのエンドポイント対（client, server）を生成する。
-client, server := sess.New()
-
-// 2. 双対操作を用いて両側のプロトコルを定義する。
+// 1. 双対操作を用いて両側のプロトコルを定義する。
 clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
     func(reply string) kont.Expr[string] {
         return sess.ExprCloseDone(reply)
@@ -192,7 +195,7 @@ serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
     )
 })
 
-// 3. 両側を歩調を合わせて駆動し、エラーを処理する。
+// 2. 両側を歩調を合わせて駆動し、エラーを処理する。
 type Err struct{ Reason string }
 left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
 if thrown != nil {
@@ -202,9 +205,8 @@ if thrown != nil {
 _ = left; _ = right
 ```
 
-プロアクター統合では `RunErrorExpr` を `StepError` / `AdvanceError` に差し替えます。下層トランスポートが
-`iox.ErrWouldBlock` を返すたびに中断がイールドし、対応するエンドポイントが完了したときにループが再開します。
-`client, server := sess.New()` という境界はそのまま再利用され、変わるのはステップを駆動する主体だけです。
+プロアクター統合では `sess.New()` でエンドポイントを作成し、`StepError` / `AdvanceError` を自分で駆動します。
+下層トランスポートが `iox.ErrWouldBlock` を返すたびに中断がイールドし、対応するエンドポイントが完了したときにループが再開します。
 
 ## 参考文献
 
