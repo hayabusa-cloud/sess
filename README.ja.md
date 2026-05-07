@@ -19,9 +19,7 @@
 
 ## 合成境界
 
-`sess` はセッションのエフェクトシグネチャと、それを解釈するエンドポイントトランスポートを所有します。有界キュー上のノンブロッキング境界として
-`iox.ErrWouldBlock` を使いますが、`iox` アウトカム代数全体は所有しません。`takt` は proactor 型のスケジューリングと完了相関を所有し、
-`cove` はサスペンションを含む合成のためのコンテキスト証拠を所有します。
+`sess` はセッションのエフェクトシグネチャと、それを解釈するエンドポイントトランスポートを所有します。有界キュー上のノンブロッキング境界として `iox.ErrWouldBlock` を使いますが、`iox` アウトカム代数全体は所有しません。`takt` は proactor 型のスケジューリングと完了相関を所有し、`cove` はサスペンションを含む合成のためのコンテキスト証拠を所有します。`sess` 内では、`iox.ErrMore` はエンドポイントトランスポート領域の外にあり、予期しないディスパッチャ失敗として扱われます。
 
 ## インストール
 
@@ -43,16 +41,14 @@ Go 1.26+ が必要です。
 
 ## 使い方
 
-プロトコルの試作と検証には `Run` を使用します。外部管理のエンドポイントには `Exec`
-を使用します。ステッピング制御が必要な場合や、ホットパスでのアロケーションオーバーヘッドを最小化したい場合は Expr API（
-`RunExpr`/`ExecExpr`）を使用します。
+プロトコルの試作と検証には `Run` を使用します。外部管理のエンドポイントには `Exec` を使用します。ステッピング制御が必要な場合や、ホットパスでのアロケーションオーバーヘッドを最小化したい場合は Expr API（`RunExpr`/`ExecExpr`）を使用します。
 
 ### 送受信
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
 server := sess.RecvBind(func(n int) kont.Eff[string] {
-    return sess.CloseDone(fmt.Sprintf("got %d", n))
+	return sess.CloseDone(fmt.Sprintf("got %d", n))
 })
 a, b := sess.Run(client, server) // "ok", "got 42"
 ```
@@ -66,12 +62,12 @@ Expr 版：`ExprSendThen`、`ExprRecvBind`、`ExprCloseDone`、`RunExpr`。
 ```go
 client := sess.SelectLThen(sess.SendThen(1, sess.CloseDone("left")))
 server := sess.OfferBranch(
-    func() kont.Eff[string] {
-        return sess.RecvBind(func(n int) kont.Eff[string] {
-            return sess.CloseDone(fmt.Sprintf("left %d", n))
-        })
-    },
-    func() kont.Eff[string] { return sess.CloseDone("right") },
+	func() kont.Eff[string] {
+		return sess.RecvBind(func(n int) kont.Eff[string] {
+			return sess.CloseDone(fmt.Sprintf("left %d", n))
+		})
+	},
+	func() kont.Eff[string] { return sess.CloseDone("right") },
 )
 a, b := sess.Run(client, server)
 ```
@@ -82,10 +78,10 @@ a, b := sess.Run(client, server)
 
 ```go
 counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
-    if i >= 3 {
-        return sess.CloseDone(kont.Right[int, string]("done"))
-    }
-    return sess.SendThen(i, kont.Pure(kont.Left[int, string](i+1)))
+	if i >= 3 {
+		return sess.CloseDone(kont.Right[int, string]("done"))
+	}
+	return sess.SendThen(i, kont.Pure(kont.Left[int, string](i+1)))
 })
 ```
 
@@ -96,7 +92,7 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 ```go
 delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
 acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
-    return sess.CloseDone("accepted")
+	return sess.CloseDone("accepted")
 })
 ```
 
@@ -111,30 +107,29 @@ _, susp := sess.Step[struct{}](protocol)
 // proactor イベントループ（例: io_uring）では、境界でイールドする:
 _, nextSusp, err := sess.Advance(ep, susp)
 if err != nil {
-    return susp // イベントループへ制御を戻し、準備できたら再スケジュールする
+	return susp // イベントループへ制御を戻し、準備できたら再スケジュールする
 }
 susp = nextSusp
 ```
 
 ### エラー処理
 
-セッションプロトコルをエラーエフェクトと合成できます。`Throw` は対になった実行を即座に中断します。返される `thrown`
-はセッション全体における未捕捉 `Throw` の原因なので、peer 側の `Either` を解釈する前に確認してください。
+セッションプロトコルをエラーエフェクトと合成できます。`Throw` は対になった実行を即座に中断します。返される `thrown` はセッション全体における未捕捉 `Throw` の原因なので、peer 側の `Either` を解釈する前に確認してください。
 
 ```go
 client := kont.ExprThrowError[string, string]("boom")
 server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
-    return sess.ExprCloseDone("recv: " + v)
+	return sess.ExprCloseDone("recv: " + v)
 })
 
 clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
 if thrown != nil {
-    // セッション全体の中断。
-    fmt.Println("session aborted:", *thrown)
-    // 相手側の Either はまだローカルに未解決のことがあります。
-    _ = clientResult
-    _ = serverResult
-    return
+	// セッション全体の中断。
+	fmt.Println("session aborted:", *thrown)
+	// 相手側の Either はまだローカルに未解決のことがあります。
+	_ = clientResult
+	_ = serverResult
+	return
 }
 
 // 未捕捉のセッション全体 Throw はなし。両方の Either が最終的なローカル結果です。
@@ -144,8 +139,7 @@ fmt.Println(clientResult, serverResult)
 要点:
 
 - `thrown == nil` のとき、両方の `Either` は最終的なローカル結果です。
-- `thrown != nil` のとき、対になった実行はセッション全体として中断されています。`*thrown` が未捕捉 `Throw` であり、peer 側の
-  `Either` はまだ未解決のことがあります。
+- `thrown != nil` のとき、対になった実行はセッション全体として中断されています。`*thrown` が未捕捉 `Throw` であり、peer 側の `Either` はまだ未解決のことがあります。
 
 ## 実行モデル
 
@@ -159,11 +153,9 @@ fmt.Println(clientResult, serverResult)
 
 ## 契約
 
-`sess` は信頼された呼び出し側を前提とするトランスポート API です。各エンドポイントは同時に 1 つの goroutine
-だけが扱う前提であり、ホットパスには並行利用のガードや `Close` 後の検査を意図的に入れていません。
+`sess` は信頼された呼び出し側を前提とするトランスポート API です。各エンドポイントは同時に 1 つの goroutine だけが扱う前提であり、ホットパスには並行利用のガードや `Close` 後の検査を意図的に入れていません。
 
-ペイロード型がインタフェースであっても、値は具体的な動的型を持っている必要があります。`any(nil)` や `error(nil)` のような
-nil インタフェース値は契約外です。nil 自体に意味がある場合は、具体型を持つ nil 値を使うか、明示的なラッパーで包んでください。
+ペイロード型がインタフェースであっても、値は具体的な動的型を持っている必要があります。`any(nil)` や `error(nil)` のような nil インタフェース値は契約外です。nil 自体に意味がある場合は、具体型を持つ nil 値を使うか、明示的なラッパーで包んでください。
 
 ## API
 
@@ -184,46 +176,37 @@ nil インタフェース値は契約外です。nil 自体に意味がある場
 ```go
 // 1. 双対操作を用いて両側のプロトコルを定義する。
 clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
-    func(reply string) kont.Expr[string] {
-        return sess.ExprCloseDone(reply)
-    },
+	func(reply string) kont.Expr[string] {
+		return sess.ExprCloseDone(reply)
+	},
 ))
 serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
-    return sess.ExprSendThen(
-        fmt.Sprintf("got %d", n),
-        sess.ExprCloseDone[string]("ok"),
-    )
+	return sess.ExprSendThen(
+		fmt.Sprintf("got %d", n),
+		sess.ExprCloseDone[string]("ok"),
+	)
 })
 
 // 2. 両側を歩調を合わせて駆動し、エラーを処理する。
 type Err struct{ Reason string }
 left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
 if thrown != nil {
-    // セッションが中断された。left/right には部分結果しか含まれない場合がある。
-    _ = thrown
+	// セッションが中断された。left/right には部分結果しか含まれない場合がある。
+	_ = thrown
 }
 _ = left; _ = right
 ```
 
-プロアクター統合では `sess.New()` でエンドポイントを作成し、`StepError` / `AdvanceError` を自分で駆動します。
-下層トランスポートが `iox.ErrWouldBlock` を返すたびに中断がイールドし、対応するエンドポイントが完了したときにループが再開します。
+プロアクター統合では `sess.New()` でエンドポイントを作成し、`StepError` / `AdvanceError` を自分で駆動します。下層トランスポートが `iox.ErrWouldBlock` を返すたびに中断がイールドし、対応するエンドポイントが完了したときにループが再開します。
 
 ## 参考文献
 
-- Kohei Honda. 1993. Types for Dyadic Interaction. In *Proc. 4th International Conference on Concurrency Theory (
-  CONCUR '93)*. LNCS 715, 509–523. https://doi.org/10.1007/3-540-57208-2_35
-- Kohei Honda, Vasco T. Vasconcelos, and Makoto Kubo. 1998. Language Primitives and Type Discipline for Structured
-  Communication-Based Programming. In *Proc. 7th European Symposium on Programming (ESOP '98)*. LNCS 1381,
-  122–138. https://doi.org/10.1007/BFb0053567
-- Philip Wadler. 2014. Propositions as Sessions. *Journal of Functional Programming* 24, 2-3 (2014),
-  384–418. https://doi.org/10.1017/S095679681400001X
-- Dominic A. Orchard and Nobuko Yoshida. 2016. Effects as Sessions, Sessions as Effects. In *Proc. 43rd Annual ACM
-  SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL '16)*.
-  568–581. https://doi.org/10.1145/2837614.2837634
-- Sam Lindley and J. Garrett Morris. 2022. Lightweight Functional Session Types. In *Behavioural Types: From Theory to
-  Tools*. 265–286. https://doi.org/10.1201/9781003337331-12
-- Simon Fowler, Sam Lindley, J. Garrett Morris, and Sára Decova. 2019. Exceptional Asynchronous Session Types: Session
-  Types without Tiers. *Proc. ACM Program. Lang.* 3, POPL (Jan. 2019), 1–29. https://doi.org/10.1145/3290341
+- Kohei Honda. 1993. Types for Dyadic Interaction. In *Proc. 4th International Conference on Concurrency Theory (CONCUR '93)*. LNCS 715, 509–523. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, and Makoto Kubo. 1998. Language Primitives and Type Discipline for Structured Communication-Based Programming. In *Proc. 7th European Symposium on Programming (ESOP '98)*. LNCS 1381, 122–138. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. 2014. Propositions as Sessions. *Journal of Functional Programming* 24, 2-3 (2014), 384–418. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard and Nobuko Yoshida. 2016. Effects as Sessions, Sessions as Effects. In *Proc. 43rd Annual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL '16)*. 568–581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley and J. Garrett Morris. 2022. Lightweight Functional Session Types. In *Behavioural Types: From Theory to Tools*. 265–286. https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, and Sára Decova. 2019. Exceptional Asynchronous Session Types: Session Types without Tiers. *Proc. ACM Program. Lang.* 3, POPL (Jan. 2019), 1–29. https://doi.org/10.1145/3290341
 
 ## 依存関係
 
