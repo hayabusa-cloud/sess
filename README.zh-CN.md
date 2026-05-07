@@ -19,8 +19,7 @@
 
 ## 组合边界
 
-`sess` 拥有会话效果签名以及解释它的端点传输。它把 `iox.ErrWouldBlock` 用作有界队列上的非阻塞边界，但不拥有完整的 `iox`
-结果代数；`takt` 拥有 proactor 风格的调度和完成事件关联；`cove` 拥有面向挂起组合的上下文证据。
+`sess` 拥有会话效果签名以及解释它的端点传输。它把 `iox.ErrWouldBlock` 用作有界队列上的非阻塞边界，但不拥有完整的 `iox` 结果代数；`takt` 拥有 proactor 风格的调度和完成事件关联；`cove` 拥有面向挂起组合的上下文证据。在 `sess` 内部，`iox.ErrMore` 不属于端点传输域，会被视为意外的调度器失败。
 
 ## 安装
 
@@ -42,15 +41,14 @@ go get code.hybscloud.com/sess
 
 ## 用法
 
-使用 `Run` 进行协议原型设计与验证。对外部管理的端点使用 `Exec`。当需要步进控制，或希望在热路径上尽量减少分配开销时，使用
-Expr API（`RunExpr`/`ExecExpr`）。
+使用 `Run` 进行协议原型设计与验证。对外部管理的端点使用 `Exec`。当需要步进控制，或希望在热路径上尽量减少分配开销时，使用 Expr API（`RunExpr`/`ExecExpr`）。
 
 ### 收发
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
 server := sess.RecvBind(func(n int) kont.Eff[string] {
-    return sess.CloseDone(fmt.Sprintf("got %d", n))
+	return sess.CloseDone(fmt.Sprintf("got %d", n))
 })
 a, b := sess.Run(client, server) // "ok", "got 42"
 ```
@@ -64,12 +62,12 @@ Expr 版本：`ExprSendThen`、`ExprRecvBind`、`ExprCloseDone`、`RunExpr`。
 ```go
 client := sess.SelectLThen(sess.SendThen(1, sess.CloseDone("left")))
 server := sess.OfferBranch(
-    func() kont.Eff[string] {
-        return sess.RecvBind(func(n int) kont.Eff[string] {
-            return sess.CloseDone(fmt.Sprintf("left %d", n))
-        })
-    },
-    func() kont.Eff[string] { return sess.CloseDone("right") },
+	func() kont.Eff[string] {
+		return sess.RecvBind(func(n int) kont.Eff[string] {
+			return sess.CloseDone(fmt.Sprintf("left %d", n))
+		})
+	},
+	func() kont.Eff[string] { return sess.CloseDone("right") },
 )
 a, b := sess.Run(client, server)
 ```
@@ -80,10 +78,10 @@ a, b := sess.Run(client, server)
 
 ```go
 counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
-    if i >= 3 {
-        return sess.CloseDone(kont.Right[int, string]("done"))
-    }
-    return sess.SendThen(i, kont.Pure(kont.Left[int, string](i+1)))
+	if i >= 3 {
+		return sess.CloseDone(kont.Right[int, string]("done"))
+	}
+	return sess.SendThen(i, kont.Pure(kont.Left[int, string](i+1)))
 })
 ```
 
@@ -94,7 +92,7 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 ```go
 delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
 acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
-    return sess.CloseDone("accepted")
+	return sess.CloseDone("accepted")
 })
 ```
 
@@ -109,30 +107,29 @@ _, susp := sess.Step[struct{}](protocol)
 // 在 proactor 事件循环（例如 io_uring）中，在边界处让出：
 _, nextSusp, err := sess.Advance(ep, susp)
 if err != nil {
-    return susp // 让出给事件循环，并在就绪后重新调度
+	return susp // 让出给事件循环，并在就绪后重新调度
 }
 susp = nextSusp
 ```
 
 ### 错误处理
 
-可以将会话协议与错误效果组合。`Throw` 会立即中止成对执行。返回的 `thrown` 是会话级未捕获 `Throw` 的全局原因；在解释对端
-`Either` 之前应先检查它。
+可以将会话协议与错误效果组合。`Throw` 会立即中止成对执行。返回的 `thrown` 是会话级未捕获 `Throw` 的全局原因；在解释对端 `Either` 之前应先检查它。
 
 ```go
 client := kont.ExprThrowError[string, string]("boom")
 server := sess.ExprRecvBind(func(v string) kont.Expr[string] {
-    return sess.ExprCloseDone("recv: " + v)
+	return sess.ExprCloseDone("recv: " + v)
 })
 
 clientResult, serverResult, thrown := sess.RunErrorExpr[string](client, server)
 if thrown != nil {
-    // 会话整体已中止。
-    fmt.Println("session aborted:", *thrown)
-    // 对端 Either 仍可能在本地尚未解析完成。
-    _ = clientResult
-    _ = serverResult
-    return
+	// 会话整体已中止。
+	fmt.Println("session aborted:", *thrown)
+	// 对端 Either 仍可能在本地尚未解析完成。
+	_ = clientResult
+	_ = serverResult
+	return
 }
 
 // 没有未捕获的全局 Throw：两个 Either 都是最终的本地结果。
@@ -156,11 +153,9 @@ fmt.Println(clientResult, serverResult)
 
 ## 契约
 
-`sess` 提供的是面向受信调用方的传输 API。每个端点都假定在同一时刻只由一个 goroutine 使用，热路径有意不加入并发使用保护或
-`Close` 之后的检查。
+`sess` 提供的是面向受信调用方的传输 API。每个端点都假定在同一时刻只由一个 goroutine 使用，热路径有意不加入并发使用保护或 `Close` 之后的检查。
 
-即使负载类型是接口，实际传递的值也必须带有具体的动态类型。像 `any(nil)` 或 `error(nil)` 这样的 nil 接口值不在契约内；如果
-nil 本身具有语义，请使用带具体类型的 nil 值，或显式包一层。
+即使负载类型是接口，实际传递的值也必须带有具体的动态类型。像 `any(nil)` 或 `error(nil)` 这样的 nil 接口值不在契约内；如果 nil 本身具有语义，请使用带具体类型的 nil 值，或显式包一层。
 
 ## API
 
@@ -181,46 +176,37 @@ nil 本身具有语义，请使用带具体类型的 nil 值，或显式包一�
 ```go
 // 1. 用对偶操作分别定义两侧的协议。
 clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
-    func(reply string) kont.Expr[string] {
-        return sess.ExprCloseDone(reply)
-    },
+	func(reply string) kont.Expr[string] {
+		return sess.ExprCloseDone(reply)
+	},
 ))
 serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
-    return sess.ExprSendThen(
-        fmt.Sprintf("got %d", n),
-        sess.ExprCloseDone[string]("ok"),
-    )
+	return sess.ExprSendThen(
+		fmt.Sprintf("got %d", n),
+		sess.ExprCloseDone[string]("ok"),
+	)
 })
 
 // 2. 同步推进两侧并处理错误。
 type Err struct{ Reason string }
 left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
 if thrown != nil {
-    // 会话被中止；left/right 可能仅承载部分结果。
-    _ = thrown
+	// 会话被中止；left/right 可能仅承载部分结果。
+	_ = thrown
 }
 _ = left; _ = right
 ```
 
-用于 proactor 集成时，请用 `sess.New()` 创建端点，并自行驱动 `StepError` / `AdvanceError`：每当底层传输返回
-`iox.ErrWouldBlock` 时挂起会让出执行权，事件循环在对端完成时再行恢复。
+用于 proactor 集成时，请用 `sess.New()` 创建端点，并自行驱动 `StepError` / `AdvanceError`：每当底层传输返回 `iox.ErrWouldBlock` 时挂起会让出执行权，事件循环在对端完成时再行恢复。
 
 ## 参考文献
 
-- Kohei Honda. 1993. Types for Dyadic Interaction. In *Proc. 4th International Conference on Concurrency Theory (
-  CONCUR '93)*. LNCS 715, 509–523. https://doi.org/10.1007/3-540-57208-2_35
-- Kohei Honda, Vasco T. Vasconcelos, and Makoto Kubo. 1998. Language Primitives and Type Discipline for Structured
-  Communication-Based Programming. In *Proc. 7th European Symposium on Programming (ESOP '98)*. LNCS 1381,
-  122–138. https://doi.org/10.1007/BFb0053567
-- Philip Wadler. 2014. Propositions as Sessions. *Journal of Functional Programming* 24, 2-3 (2014),
-  384–418. https://doi.org/10.1017/S095679681400001X
-- Dominic A. Orchard and Nobuko Yoshida. 2016. Effects as Sessions, Sessions as Effects. In *Proc. 43rd Annual ACM
-  SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL '16)*.
-  568–581. https://doi.org/10.1145/2837614.2837634
-- Sam Lindley and J. Garrett Morris. 2022. Lightweight Functional Session Types. In *Behavioural Types: From Theory to
-  Tools*. 265–286. https://doi.org/10.1201/9781003337331-12
-- Simon Fowler, Sam Lindley, J. Garrett Morris, and Sára Decova. 2019. Exceptional Asynchronous Session Types: Session
-  Types without Tiers. *Proc. ACM Program. Lang.* 3, POPL (Jan. 2019), 1–29. https://doi.org/10.1145/3290341
+- Kohei Honda. 1993. Types for Dyadic Interaction. In *Proc. 4th International Conference on Concurrency Theory (CONCUR '93)*. LNCS 715, 509–523. https://doi.org/10.1007/3-540-57208-2_35
+- Kohei Honda, Vasco T. Vasconcelos, and Makoto Kubo. 1998. Language Primitives and Type Discipline for Structured Communication-Based Programming. In *Proc. 7th European Symposium on Programming (ESOP '98)*. LNCS 1381, 122–138. https://doi.org/10.1007/BFb0053567
+- Philip Wadler. 2014. Propositions as Sessions. *Journal of Functional Programming* 24, 2-3 (2014), 384–418. https://doi.org/10.1017/S095679681400001X
+- Dominic A. Orchard and Nobuko Yoshida. 2016. Effects as Sessions, Sessions as Effects. In *Proc. 43rd Annual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL '16)*. 568–581. https://doi.org/10.1145/2837614.2837634
+- Sam Lindley and J. Garrett Morris. 2022. Lightweight Functional Session Types. In *Behavioural Types: From Theory to Tools*. 265–286. https://doi.org/10.1201/9781003337331-12
+- Simon Fowler, Sam Lindley, J. Garrett Morris, and Sára Decova. 2019. Exceptional Asynchronous Session Types: Session Types without Tiers. *Proc. ACM Program. Lang.* 3, POPL (Jan. 2019), 1–29. https://doi.org/10.1145/3290341
 
 ## 依赖
 
