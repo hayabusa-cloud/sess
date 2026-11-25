@@ -72,8 +72,6 @@ func runExprDispatchSession(ctx *sessionContext, sop sessionDispatcher) (kont.Re
 	if err == nil {
 		return v, true
 	}
-	if !iox.IsWouldBlock(err) {
-		panic("sess: dispatch returned unexpected error: " + err.Error())
-	}
+	requireWouldBlock(err)
 	return nil, false
 }

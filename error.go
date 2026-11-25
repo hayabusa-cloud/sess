@@ -90,20 +90,12 @@ func RunError[E, A, B any](a kont.Eff[A], b kont.Eff[B]) (kont.Either[E, A], kon
 	return RunErrorExpr[E](Reify(a), Reify(b))
 }
 
-// RunErrorExpr creates a session pair, runs both Expr-world protocols with
-// error handling, and returns both local results plus the first uncaught
-// session-wide thrown cause when one occurs.
+// RunErrorExpr runs both protocols on a fresh endpoint pair. The calling
+// goroutine drives both roles, using [iox.Backoff] when neither can progress.
 //
-// If thrown is nil, both returned Either values are final local outcomes.
-// If thrown is non-nil, the paired session terminated by uncaught Throw;
-// callers should inspect thrown first, because a peer-side Either may still
-// reflect a locally unresolved computation rather than a peer-local throw.
-// Internally, doneA/doneB track whether each side has actually completed,
-// because StepError/AdvanceError leave a pending side in the zero value of
-// Either until its suspension resolves.
-//
-// Interleaves execution of both sides on the calling goroutine using adaptive
-// backoff (iox.Backoff). Does not spawn goroutines or create channels.
+// If thrown is nil, both local results are final. Otherwise it points to the
+// payload of the first uncaught [kont.Throw]. Check thrown before reading
+// the peer's result, which may still be unresolved.
 func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A], kont.Either[E, B], *E) {
 	epA, epB := New()
 	resultA, suspA := StepError[E, A](a)
@@ -118,17 +110,16 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 		}
 	}()
 
-	doneA := suspA == nil
-	doneB := suspB == nil
 	var bo iox.Backoff
 	for suspA != nil || suspB != nil {
 		progress := false
 		if suspA != nil {
 			var err error
 			resultA, suspA, err = AdvanceError[E](epA, suspA)
-			if err == nil {
-				doneA = suspA == nil
-				if doneA && resultA.IsLeft() {
+			if err != nil {
+				requireWouldBlock(err)
+			} else {
+				if suspA == nil && resultA.IsLeft() {
 					errVal, _ := resultA.GetLeft()
 					return resultA, resultB, &errVal
 				}
@@ -138,9 +129,10 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 		if suspB != nil {
 			var err error
 			resultB, suspB, err = AdvanceError[E](epB, suspB)
-			if err == nil {
-				doneB = suspB == nil
-				if doneB && resultB.IsLeft() {
+			if err != nil {
+				requireWouldBlock(err)
+			} else {
+				if suspB == nil && resultB.IsLeft() {
 					errVal, _ := resultB.GetLeft()
 					return resultA, resultB, &errVal
 				}

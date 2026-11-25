@@ -63,10 +63,15 @@ func dispatchWait(ctx *sessionContext, sop sessionDispatcher) kont.Resumed {
 		if err == nil {
 			return v
 		}
-		if !iox.IsWouldBlock(err) {
-			panic("sess: dispatch returned unexpected error: " + err.Error())
-		}
+		requireWouldBlock(err)
 		bo.Wait()
+	}
+}
+
+// A synchronous runner may retry only a would-block transport error.
+func requireWouldBlock(err error) {
+	if !iox.IsWouldBlock(err) {
+		panic("sess: dispatch returned unexpected error: " + err.Error())
 	}
 }
 
