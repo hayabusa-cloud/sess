@@ -14,7 +14,10 @@ import (
 // goroutine using adaptive backoff (iox.Backoff) when neither side
 // can make progress. Does not spawn goroutines or create channels.
 func Run[A, B any](a kont.Eff[A], b kont.Eff[B]) (A, B) {
-	return RunExpr(Reify(a), Reify(b))
+	resultA, suspA := kont.Step(a)
+	resultB, suspB := kont.Step(b)
+	epA, epB := New()
+	return runPair(epA, epB, resultA, suspA, resultB, suspB)
 }
 
 // RunExpr creates a session pair, runs both Expr-world protocols, and
@@ -25,6 +28,10 @@ func RunExpr[A, B any](a kont.Expr[A], b kont.Expr[B]) (A, B) {
 	epA, epB := New()
 	resultA, suspA := Step[A](a)
 	resultB, suspB := Step[B](b)
+	return runPair(epA, epB, resultA, suspA, resultB, suspB)
+}
+
+func runPair[A, B any](epA, epB *Endpoint, resultA A, suspA *kont.Suspension[A], resultB B, suspB *kont.Suspension[B]) (A, B) {
 	var bo iox.Backoff
 
 	sopA := pendingDispatcher(suspA)

@@ -7,6 +7,7 @@ package sess_test
 import (
 	"fmt"
 	"runtime"
+	"slices"
 	"testing"
 	"weak"
 
@@ -89,6 +90,46 @@ func TestPairedRunnerReleasesCompletedSend(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRunStartsBothRolesBeforeDispatch(t *testing.T) {
+	var calls []string
+	sender := kont.Bind(kont.Pure(41), func(n int) kont.Eff[error] {
+		calls = append(calls, "start sender")
+		return kont.Map(kont.Perform(sess.Send[int]{Value: n}), func(struct{}) error {
+			calls = append(calls, "sent")
+			return nil
+		})
+	})
+	receiver := kont.Bind(kont.Pure(1), func(add int) kont.Eff[int] {
+		calls = append(calls, "start receiver")
+		return kont.Map(kont.Perform(sess.Recv[int]{}), func(n int) int {
+			calls = append(calls, "received")
+			return n + add
+		})
+	})
+
+	for range 2 {
+		calls = calls[:0]
+		err, n := sess.Run(sender, receiver)
+		if err != nil || n != 42 {
+			t.Fatalf("Run returned (%v, %d), want (nil, 42)", err, n)
+		}
+		if want := []string{"start sender", "start receiver", "sent", "received"}; !slices.Equal(calls, want) {
+			t.Fatalf("call order %v, want %v", calls, want)
+		}
+	}
+}
+
+func TestPairedRunnersPreserveImmediateResults(t *testing.T) {
+	left, right := sess.Run(kont.Pure("ready"), sess.CloseDone(42))
+	if left != "ready" || right != 42 {
+		t.Errorf(`Run returned (%q, %d), want ("ready", 42)`, left, right)
+	}
+	left, right = sess.RunExpr(sess.ExprCloseDone("closed"), kont.ExprReturn(7))
+	if left != "closed" || right != 7 {
+		t.Errorf(`RunExpr returned (%q, %d), want ("closed", 7)`, left, right)
 	}
 }
 
