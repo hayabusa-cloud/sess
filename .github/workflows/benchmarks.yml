@@ -1,0 +1,74 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOWORK: 'off'
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '2'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.x'
+
+      - name: Install Atomix Go 1.27.x
+        run: |
+          lfq=$(go mod download -json code.hybscloud.com/lfq | jq -er .Dir)
+          make -C "$lfq" install-compiler COMPILER_DIR="$RUNNER_TEMP/go-atomix"
+          echo "GOROOT=$RUNNER_TEMP/go-atomix" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/go-atomix/bin" >> "$GITHUB_PATH"
+
+      - name: Run benchmarks
+        shell: bash
+        run: |
+          results="$RUNNER_TEMP/sess-benchmarks"
+          mkdir -p "$results"
+          {
+            go version
+            go env -json GOOS GOARCH GOAMD64 GOFLAGS GOEXPERIMENT
+            uname -srmo
+            lscpu
+            taskset -pc "$$"
+            printf 'revision=%s\nGOMAXPROCS=%s\n' "$GITHUB_SHA" "$GOMAXPROCS"
+            go list -mod=readonly -m all
+          } > "$results/environment.txt"
+          make bench | tee "$results/benchmarks.txt"
+          awk '/^Benchmark/ && $4 == "ns/op" {
+            if (++samples[$1] == 1) print
+          }
+          END {
+            if (!length(samples)) exit 1
+            for (name in samples) if (samples[name] != 10) exit 1
+          }' "$results/benchmarks.txt" > "$results/first.txt"
+          {
+            echo 'First sample per workload. Download the artifact for all ten samples and the environment.'
+            echo
+            echo '~~~text'
+            cat "$results/first.txt"
+            echo '~~~'
+          } | tee "$results/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sess-benchmarks
+          path: |
+            ${{ runner.temp }}/sess-benchmarks/summary.md
+            ${{ runner.temp }}/sess-benchmarks/benchmarks.txt
+            ${{ runner.temp }}/sess-benchmarks/environment.txt
+          if-no-files-found: error

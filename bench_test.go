@@ -7,9 +7,53 @@ package sess_test
 import (
 	"testing"
 
+	"code.hybscloud.com/iox"
 	"code.hybscloud.com/kont"
 	"code.hybscloud.com/sess"
 )
+
+// BenchmarkSendRetry measures one refused send on an already full queue.
+func BenchmarkSendRetry(b *testing.B) {
+	sender, _ := sess.New()
+	value := 42
+	var pending *kont.Suspension[struct{}]
+	for pending == nil {
+		_, h := sess.Step(kont.ExprPerform(sess.Send[*int]{Value: &value}))
+		_, next, err := sess.Advance(sender, h)
+		if err == nil && next == nil {
+			continue
+		}
+		if next != h || !iox.IsWouldBlock(err) {
+			b.Fatalf("fill: next=%v, err=%v", next, err)
+		}
+		pending = h
+	}
+	defer pending.Discard()
+	b.ReportAllocs()
+	for b.Loop() {
+		_, next, err := sess.Advance(sender, pending)
+		if next != pending || !iox.IsWouldBlock(err) {
+			b.Fatalf("retry: next=%v, err=%v", next, err)
+		}
+	}
+}
+
+// BenchmarkChannelSendRetry measures a refused send on a full buffered channel.
+func BenchmarkChannelSendRetry(b *testing.B) {
+	ch := make(chan *int, 4)
+	value := 42
+	for range cap(ch) {
+		ch <- &value
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		select {
+		case ch <- &value:
+			b.Fatal("send on full channel succeeded")
+		default:
+		}
+	}
+}
 
 // BenchmarkSendRecv measures a single send/recv round-trip.
 func BenchmarkSendRecv(b *testing.B) {

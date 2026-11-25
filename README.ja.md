@@ -1,5 +1,5 @@
 [![Go Reference](https://pkg.go.dev/badge/code.hybscloud.com/sess.svg)](https://pkg.go.dev/code.hybscloud.com/sess)
-[![Go Report Card](https://goreportcard.com/badge/github.com/hayabusa-cloud/sess)](https://goreportcard.com/report/github.com/hayabusa-cloud/sess)
+[![Benchmarks](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml)
 [![Coverage Status](https://codecov.io/gh/hayabusa-cloud/sess/graph/badge.svg)](https://codecov.io/gh/hayabusa-cloud/sess)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -7,15 +7,22 @@
 
 # sess
 
-[kont](https://code.hybscloud.com/kont) の代数的エフェクトによるセッション型通信プロトコル。
+通信する双方は、やり取りするメッセージの型と順序をそろえておく必要があります。`sess` には **Cont** と **Expr** という二つの世界があり、どちらでも同じロールのプロトコルを Go で記述できます。
 
 ## 概要
 
-セッション型は通信プロトコルの各ステップに型を割り当てます。各操作 — 送信、受信、選択、提供、クローズ — は Go ジェネリクスにより個別に型安全であり、単一エンドポイント内のプロトコル合成も型安全です。双対性（エンドポイント間の操作の対応）はプログラマの責任です：プログラマが双対プロトコルを記述し、不一致は実行時に型アサーション失敗またはデッドロックとして現れます。
+`sess` はプロトコルの各操作を [kont](https://code.hybscloud.com/kont) の代数的エフェクトとして表します。各ロールは値を送受信し、分岐を選んだり相手の選択に従ったりし、自分のエンドポイントを閉じることができます。
 
-`sess` はセッション型を [kont](https://code.hybscloud.com/kont) エフェクトシステムで評価される代数的エフェクトとしてエンコードします。各プロトコルステップ — 送信、受信、選択、提供、クローズ — はトランスポートが操作を完了するまで計算を中断するエフェクトです。トランスポートは計算境界で `iox.ErrWouldBlock` を返し、proactor イベントループ（例：`io_uring`）がスレッドをブロックせずに実行を多重化できるようにします。
+再試行をランナーに任せる場合は、**Cont**（`kont.Eff[A]`）を使います。`RecvBind` は受信した値を関数に渡し、その関数がロールの残りのプロトコルを返します。`Run` は両方のロールを実行します。相手側が別に動作している場合は、`Exec` で片方のエンドポイントを実行します。
 
-等価な API ファミリは 2 つあります。Cont（クロージャベースで合成しやすい）と Expr（フレームベースで、ホットパス向けに償却ゼロアロケーション）です。
+`io_uring` を使うイベントループなどで、ドライバが操作の内容を調べたり再試行のタイミングを決めたりする場合は、**Expr**（`kont.Expr[A]`）を使います。残りの処理は継続フレームが保持します。`Step` は結果またはサスペンションを返し、`Advance` は保留中の操作をエンドポイントで試みます。受信時に `Advance` が `iox.ErrWouldBlock` を返したら、同じサスペンションを保持し、相手が値を送信してから再試行します。
+
+次の二つは同じ受信ロールです。どちらも `int` を受信し、自分の側で `Close` を実行してから受信値を返します。送信ロールと組み合わせて、Cont では `Run`、Expr では `RunExpr` で実行します。
+
+```go
+contReceiver := sess.RecvBind(sess.CloseDone[int])
+exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
+```
 
 ## 合成境界
 
@@ -31,13 +38,13 @@ Go 1.27+ が必要です。
 
 ## セッション操作
 
-各操作には双対があります。一方のエンドポイントが操作を行うと、他方はその双対操作を行う必要があります。
+Go は各操作のペイロードと応答の型を検査します。相手側のプロトコルでは、送信には同じ型の受信を、分岐の選択にはその選択を受け取る `Offer` を対応させます。データと分岐の選択は別々のキューを通るため、両者の操作順序が食い違っていても実行が完了することがあります。
 
-| 操作 | 双対 | サスペンド？ |
+| 操作 | 双対 | バックプレッシャー |
 |------|------|-------------|
 | `Send[T]` — 値を送信 | `Recv[T]` — 値を受信 | `iox.ErrWouldBlock` |
 | `SelectL` / `SelectR` — 分岐を選択 | `Offer` — ピアの選択に従う | `iox.ErrWouldBlock` |
-| `Close` — セッションを終了 | `Close` | しない |
+| `Close` — 自分の側の終了を通知 | `Close` | しない |
 
 ## 使い方
 
@@ -149,13 +156,15 @@ fmt.Println(clientResult, serverResult)
 | `Exec` / `ExecExpr` | 作成済みエンドポイント上で片側を実行 |
 | `Step` + `Advance` | 外部イベントループ向けに、エフェクトを一つずつ評価 |
 
-**Cont と Expr の使い分け**: Cont はクロージャベースで合成が容易。Expr はフレームベースで償却ゼロアロケーション、ホットパスに適する。
+プロトコル全体を実行した場合と、満杯のキューに対して再試行した場合のメモリ割り当てを計測できます。[ベンチマークガイド](BENCHMARKS.md)
 
 ## 契約
 
 `sess` は信頼された呼び出し側を前提とするトランスポート API です。各エンドポイントは同時に 1 つの goroutine だけが扱う前提であり、ホットパスには並行利用のガードや `Close` 後の検査を意図的に入れていません。
 
 ペイロード型がインタフェースであっても、値は具体的な動的型を持っている必要があります。`any(nil)` や `error(nil)` のような nil インタフェース値は契約外です。nil 自体に意味がある場合は、具体型を持つ nil 値を使うか、明示的なラッパーで包んでください。
+
+`ExprSendThen` などの融合コンストラクタが返す式は一度だけ実行できます。実行のたびに、そのロールの式を組み立て直してください。
 
 ## API
 

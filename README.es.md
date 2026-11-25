@@ -1,5 +1,5 @@
 [![Go Reference](https://pkg.go.dev/badge/code.hybscloud.com/sess.svg)](https://pkg.go.dev/code.hybscloud.com/sess)
-[![Go Report Card](https://goreportcard.com/badge/github.com/hayabusa-cloud/sess)](https://goreportcard.com/report/github.com/hayabusa-cloud/sess)
+[![Benchmarks](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml)
 [![Coverage Status](https://codecov.io/gh/hayabusa-cloud/sess/graph/badge.svg)](https://codecov.io/gh/hayabusa-cloud/sess)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -7,15 +7,22 @@
 
 # sess
 
-Protocolos de comunicación con tipos de sesión mediante efectos algebraicos sobre [kont](https://code.hybscloud.com/kont).
+Los dos participantes deben acordar los tipos de los mensajes y el orden en que los intercambian. En `sess`, los mundos **Cont** y **Expr** ofrecen dos formas equivalentes de escribir en Go el protocolo de cada rol.
 
 ## Descripción general
 
-Los tipos de sesión asignan un tipo a cada paso de un protocolo de comunicación. Cada operación —enviar, recibir, seleccionar, ofrecer, cerrar— está individualmente bien tipada gracias a los genéricos de Go, y la composición de protocolos dentro de un mismo endpoint es segura en tipos. La dualidad (la correspondencia de operaciones entre endpoints) es responsabilidad del programador: es él quien escribe los protocolos duales y las discrepancias se manifiestan en tiempo de ejecución como fallos de aserción de tipo o interbloqueos.
+`sess` representa cada acción del protocolo como un efecto algebraico que se ejecuta con [kont](https://code.hybscloud.com/kont). Un rol puede enviar o recibir un valor, elegir una rama o seguir la que eligió el otro participante, y cerrar su extremo de la sesión.
 
-`sess` codifica los tipos de sesión como efectos algebraicos evaluados por el sistema de efectos [kont](https://code.hybscloud.com/kont). Cada paso del protocolo —enviar, recibir, seleccionar, ofrecer, cerrar— es un efecto que suspende la computación hasta que el transporte completa la operación. El transporte devuelve `iox.ErrWouldBlock` en las fronteras de cómputo, lo que permite a los bucles de eventos proactor (p. ej. `io_uring`) multiplexar la ejecución sin bloquear hilos.
+Use **Cont** (`kont.Eff[A]`) cuando quiera dejar los reintentos a cargo del ejecutor. `RecvBind` pasa el valor recibido a una función que devuelve el resto del protocolo del rol. `Run` ejecuta ambos roles. Use `Exec` para un solo extremo si el otro se ejecuta por separado.
 
-Hay dos familias de API equivalentes: Cont (basada en closures, fácil de componer) y Expr (basada en marcos, con cero asignaciones amortizadas en las rutas críticas).
+Use **Expr** (`kont.Expr[A]`) si el controlador necesita inspeccionar las operaciones o decidir cuándo reintentarlas, como en un bucle de eventos basado en `io_uring`. Los marcos de continuación guardan el trabajo pendiente. `Step` devuelve un resultado o una suspensión, y `Advance` intenta la operación suspendida en el extremo de la sesión. Si `Advance` devuelve `iox.ErrWouldBlock` al intentar recibir, conserve la misma suspensión y reintente la recepción cuando el otro participante haya enviado el valor.
+
+Ambas versiones del mismo rol reciben un `int`, ejecutan `Close` en su endpoint y devuelven el valor recibido. Empareje el receptor con un emisor mediante `Run` en Cont o `RunExpr` en Expr.
+
+```go
+contReceiver := sess.RecvBind(sess.CloseDone[int])
+exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
+```
 
 ## Límite de composición
 
@@ -31,13 +38,13 @@ Requiere Go 1.27+.
 
 ## Operaciones de sesión
 
-Cada operación tiene un dual. Cuando un endpoint realiza una operación, el otro debe realizar su dual.
+Go comprueba los tipos de los datos y de la respuesta de cada operación. En el protocolo del otro participante, a cada envío le corresponde una recepción del mismo tipo y a cada elección de rama, una oferta. Los datos y las elecciones viajan por colas separadas, por lo que la ejecución puede terminar aunque los roles discrepen en el orden de las operaciones.
 
-| Operación                               | Dual                                 | ¿Suspende?          |
+| Operación                               | Dual                                 | Contrapresión |
 |-----------------------------------------|--------------------------------------|---------------------|
 | `Send[T]` — enviar un valor             | `Recv[T]` — recibir un valor         | `iox.ErrWouldBlock` |
 | `SelectL` / `SelectR` — elegir una rama | `Offer` — seguir la elección del par | `iox.ErrWouldBlock` |
-| `Close` — finalizar la sesión           | `Close`                              | Nunca               |
+| `Close` — señalar el cierre local       | `Close`                              | Nunca               |
 
 ## Uso
 
@@ -151,13 +158,15 @@ En resumen:
 | `Exec` / `ExecExpr` | Ejecuta un lado sobre un endpoint precreado                                  |
 | `Step` + `Advance`  | Evalúa un efecto a la vez, para bucles de eventos externos                   |
 
-**Cont vs Expr**: Cont se basa en closures y es sencillo de componer. Expr se basa en marcos con cero asignaciones amortizadas, adecuado para rutas críticas.
+Compare las asignaciones de memoria de protocolos completos y de los reintentos sobre una cola llena. [Guía de benchmarks](BENCHMARKS.md)
 
 ## Contrato
 
 `sess` expone una API de transporte orientada a llamadores de confianza. Cada endpoint está pensado para ser usado por una sola goroutine a la vez, y la ruta crítica omite deliberadamente las verificaciones de uso concurrente y las comprobaciones después de `Close`.
 
 Si el tipo de la carga útil es una interfaz, el valor debe seguir portando un tipo dinámico concreto. Los valores de interfaz nil como `any(nil)` o `error(nil)` quedan fuera del contrato; si nil tiene significado semántico, use un valor nil de un tipo concreto o un envoltorio explícito.
+
+Los constructores fusionados, como `ExprSendThen`, crean expresiones de un solo uso. Vuelva a construir el rol para cada ejecución.
 
 ## API
 

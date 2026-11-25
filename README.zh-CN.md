@@ -1,5 +1,5 @@
 [![Go Reference](https://pkg.go.dev/badge/code.hybscloud.com/sess.svg)](https://pkg.go.dev/code.hybscloud.com/sess)
-[![Go Report Card](https://goreportcard.com/badge/github.com/hayabusa-cloud/sess)](https://goreportcard.com/report/github.com/hayabusa-cloud/sess)
+[![Benchmarks](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml)
 [![Coverage Status](https://codecov.io/gh/hayabusa-cloud/sess/graph/badge.svg)](https://codecov.io/gh/hayabusa-cloud/sess)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -7,15 +7,22 @@
 
 # sess
 
-基于 [kont](https://code.hybscloud.com/kont) 代数效果的会话类型通信协议。
+通信双方需要约定消息的类型和收发顺序。`sess` 的 **Cont** 和 **Expr** 两个世界提供了两种等价的方式，都可以用 Go 描述每个角色的协议。
 
 ## 概述
 
-会话类型为通信协议的每个步骤分配一个类型。每个操作 — 发送、接收、选择、提供、关闭 — 通过 Go 泛型实现独立的类型安全，单个端点内的协议组合也是类型安全的。对偶性（跨端点的操作匹配）是程序员的责任：程序员编写对偶协议，不匹配在运行时以类型断言失败或死锁的形式表现出来。
+`sess` 通过 [kont](https://code.hybscloud.com/kont) 的代数效果表示协议的每一步。每个角色都可以发送或接收值，选择分支或遵循对端的选择，也可以关闭自己的端点。
 
-`sess` 将会话类型编码为由 [kont](https://code.hybscloud.com/kont) 效果系统求值的代数效果。每个协议步骤 — 发送、接收、选择、提供、关闭 — 是一个效果，它会挂起计算直到传输层完成操作。传输层在计算边界返回 `iox.ErrWouldBlock`，允许 proactor 事件循环（如 `io_uring`）在不阻塞线程的情况下多路复用执行。
+需要把重试交给运行器时，用 **Cont**（`kont.Eff[A]`）。`RecvBind` 把收到的值传给一个函数，由它返回该角色后续的协议。`Run` 驱动两个角色。如果对端单独运行，可以用 `Exec` 驱动本端。
 
-提供两组等价的 API：Cont（基于闭包，便于直接组合）和 Expr（基于帧，在热路径上实现摊销零分配）。
+当驱动程序需要查看操作或决定何时重试时，可以用 **Expr**（`kont.Expr[A]`），例如在基于 `io_uring` 的事件循环中。续延帧保存后续的计算。`Step` 返回结果或挂起句柄，`Advance` 在端点上尝试执行挂起的操作。如果接收时 `Advance` 返回 `iox.ErrWouldBlock`，就保留同一个挂起句柄，等对端发送数据后再重试。
+
+下面是同一个接收角色的两种写法。两者都接收一个 `int`，在本端执行 `Close`，然后返回收到的值。将接收角色与发送角色配对后，Cont 用 `Run` 执行，Expr 用 `RunExpr` 执行。
+
+```go
+contReceiver := sess.RecvBind(sess.CloseDone[int])
+exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
+```
 
 ## 组合边界
 
@@ -31,13 +38,13 @@ go get code.hybscloud.com/sess
 
 ## 会话操作
 
-每个操作都有对偶。当一端执行某个操作时，另一端必须执行其对偶操作。
+Go 检查每个操作的负载类型和应答类型。在对端的协议中，每次发送都应对应一次相同类型的接收，每次分支选择都应对应一次 `Offer`。数据和分支选择使用独立的队列，因此即使两个角色的操作顺序不匹配，协议也可能执行完毕。
 
-| 操作 | 对偶 | 挂起？ |
+| 操作 | 对偶 | 传输背压 |
 |------|------|--------|
 | `Send[T]` — 发送一个值 | `Recv[T]` — 接收一个值 | `iox.ErrWouldBlock` |
 | `SelectL` / `SelectR` — 选择分支 | `Offer` — 跟随对端选择 | `iox.ErrWouldBlock` |
-| `Close` — 结束会话 | `Close` | 从不 |
+| `Close` — 标记本端结束 | `Close` | 从不 |
 
 ## 用法
 
@@ -149,13 +156,15 @@ fmt.Println(clientResult, serverResult)
 | `Exec` / `ExecExpr` | 在预创建的端点上运行一方 |
 | `Step` + `Advance` | 面向外部事件循环的逐效果控制 |
 
-**Cont 与 Expr 的选择**：Cont 基于闭包，组合简单直接。Expr 基于帧，摊销零分配，适合热路径。
+可分别测量执行完整协议和在满队列上重试时的内存分配。[基准测试指南](BENCHMARKS.md)
 
 ## 契约
 
 `sess` 提供的是面向受信调用方的传输 API。每个端点都假定在同一时刻只由一个 goroutine 使用，热路径有意不加入并发使用保护或 `Close` 之后的检查。
 
 即使负载类型是接口，实际传递的值也必须带有具体的动态类型。像 `any(nil)` 或 `error(nil)` 这样的 nil 接口值不在契约内；如果 nil 本身具有语义，请使用带具体类型的 nil 值，或显式包一层。
+
+`ExprSendThen` 等融合构造函数生成的表达式只能执行一次。每次运行前都要重新构造角色的表达式。
 
 ## API
 

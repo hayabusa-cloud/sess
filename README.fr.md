@@ -1,5 +1,5 @@
 [![Go Reference](https://pkg.go.dev/badge/code.hybscloud.com/sess.svg)](https://pkg.go.dev/code.hybscloud.com/sess)
-[![Go Report Card](https://goreportcard.com/badge/github.com/hayabusa-cloud/sess)](https://goreportcard.com/report/github.com/hayabusa-cloud/sess)
+[![Benchmarks](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml)
 [![Coverage Status](https://codecov.io/gh/hayabusa-cloud/sess/graph/badge.svg)](https://codecov.io/gh/hayabusa-cloud/sess)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -7,15 +7,22 @@
 
 # sess
 
-Protocoles de communication à types de session via effets algébriques sur [kont](https://code.hybscloud.com/kont).
+Les deux participants doivent s’accorder sur les types des messages et leur ordre. Dans `sess`, les mondes **Cont** et **Expr** offrent deux façons équivalentes d’écrire en Go le protocole de chaque rôle.
 
 ## Présentation
 
-Les types de session attribuent un type à chaque étape d'un protocole de communication. Chaque opération — envoyer, recevoir, sélectionner, offrir, fermer — est individuellement bien typée grâce aux génériques de Go, et la composition de protocoles au sein d'un même endpoint est sûre en types. La dualité (correspondance des opérations entre endpoints) est à la charge du programmeur : c'est lui qui écrit les protocoles duaux, et les incohérences se manifestent à l'exécution sous forme d'échecs d'assertion de type ou de blocages.
+`sess` représente chaque action du protocole par un effet algébrique exécuté avec [kont](https://code.hybscloud.com/kont). Un rôle peut envoyer ou recevoir une valeur, choisir une branche ou suivre le choix de l’autre participant, et fermer son extrémité de la session.
 
-`sess` encode les types de session comme des effets algébriques évalués par le système d'effets [kont](https://code.hybscloud.com/kont). Chaque étape du protocole — envoyer, recevoir, sélectionner, offrir, fermer — est un effet qui suspend le calcul jusqu'à ce que le transport ait terminé l'opération. Le transport renvoie `iox.ErrWouldBlock` aux frontières de calcul, ce qui permet aux boucles d'événements proactor (par ex. `io_uring`) de multiplexer l'exécution sans bloquer les threads.
+Utilisez **Cont** (`kont.Eff[A]`) pour confier les nouvelles tentatives au moteur d’exécution. `RecvBind` transmet la valeur reçue à une fonction qui renvoie la suite du protocole. `Run` exécute les deux rôles. Utilisez `Exec` pour un seul endpoint si l’autre s’exécute séparément.
 
-Deux familles d'API équivalentes sont disponibles : Cont (à base de fermetures, simple à composer) et Expr (à base de cadres, avec zéro allocation amortie sur les chemins critiques).
+Utilisez **Expr** (`kont.Expr[A]`) si le pilote doit examiner les opérations ou décider quand les retenter, comme dans une boucle d’événements fondée sur `io_uring`. Les cadres de continuation conservent la suite du calcul. `Step` renvoie un résultat ou une suspension, et `Advance` tente l’opération suspendue sur l’endpoint. Si `Advance` renvoie `iox.ErrWouldBlock` lors d’une réception, conservez la même suspension et réessayez après l’envoi du message par l’autre participant.
+
+Ces deux versions du même rôle reçoivent un `int`, exécutent `Close` localement et renvoient la valeur reçue. Associez le récepteur à un émetteur avec `Run` dans le monde Cont ou `RunExpr` dans le monde Expr.
+
+```go
+contReceiver := sess.RecvBind(sess.CloseDone[int])
+exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
+```
 
 ## Limite de composition
 
@@ -31,13 +38,13 @@ Nécessite Go 1.27+.
 
 ## Opérations de session
 
-Chaque opération admet une duale. Quand un endpoint exécute une opération, l'autre doit exécuter sa duale.
+Go vérifie les types des données et de la réponse de chaque opération. Dans le protocole de l’autre participant, faites correspondre à chaque envoi une réception du même type et à chaque choix de branche une offre. Les données et les choix empruntent des files distinctes, si bien que l’exécution peut se terminer même si les deux rôles ne suivent pas le même ordre.
 
-| Opération                                   | Duale                             | Suspend ?           |
+| Opération                                   | Duale                             | Contre-pression |
 |---------------------------------------------|-----------------------------------|---------------------|
 | `Send[T]` — envoyer une valeur              | `Recv[T]` — recevoir une valeur   | `iox.ErrWouldBlock` |
 | `SelectL` / `SelectR` — choisir une branche | `Offer` — suivre le choix du pair | `iox.ErrWouldBlock` |
-| `Close` — terminer la session               | `Close`                           | Jamais              |
+| `Close` — signaler la fermeture locale      | `Close`                           | Jamais              |
 
 ## Utilisation
 
@@ -151,13 +158,15 @@ En résumé :
 | `Exec` / `ExecExpr` | Exécute un côté sur un endpoint pré-créé                                         |
 | `Step` + `Advance`  | Évalue un effet à la fois, pour boucles d'événements externes                    |
 
-**Cont vs Expr** : Cont est à base de fermetures et facile à composer. Expr est à base de cadres avec zéro allocation amortie, adapté aux chemins critiques.
+Comparez les allocations pour des protocoles complets et pour une nouvelle tentative sur une file pleine. [Guide des benchmarks](BENCHMARKS.md)
 
 ## Contrat
 
 `sess` expose une API de transport destinée à des appelants de confiance. Chaque endpoint est conçu pour être utilisé par une seule goroutine à la fois, et le chemin critique omet délibérément les contrôles d'usage concurrent ainsi que les vérifications après `Close`.
 
 Si le type de la charge utile est une interface, la valeur doit tout de même porter un type dynamique concret. Les valeurs d'interface nil comme `any(nil)` ou `error(nil)` sont hors contrat ; si nil a une signification sémantique, utilisez une valeur nil d'un type concret ou un wrapper explicite.
+
+Les constructeurs fusionnés tels que `ExprSendThen` créent des expressions à usage unique. Reconstruisez le rôle à chaque exécution.
 
 ## API
 

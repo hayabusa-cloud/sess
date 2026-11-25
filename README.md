@@ -1,5 +1,5 @@
 [![Go Reference](https://pkg.go.dev/badge/code.hybscloud.com/sess.svg)](https://pkg.go.dev/code.hybscloud.com/sess)
-[![Go Report Card](https://goreportcard.com/badge/github.com/hayabusa-cloud/sess)](https://goreportcard.com/report/github.com/hayabusa-cloud/sess)
+[![Benchmarks](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml)
 [![Coverage Status](https://codecov.io/gh/hayabusa-cloud/sess/graph/badge.svg)](https://codecov.io/gh/hayabusa-cloud/sess)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -7,15 +7,22 @@
 
 # sess
 
-Session-typed communication protocols via algebraic effects on [kont](https://code.hybscloud.com/kont).
+Two peers need to agree on the types and order of their messages. In `sess`, the **Cont** and **Expr** worlds give you two equivalent ways to write each role’s protocol in Go.
 
 ## Overview
 
-Session types assign a type to each step of a communication protocol. Each operation — send, receive, select, offer, close — is individually well-typed via Go generics, and protocol composition within a single endpoint is type-safe. Duality (matching operations across endpoints) is a programmer responsibility: the programmer writes dual protocols, and mismatches manifest at runtime as type assertion failures or deadlocks.
+`sess` represents each protocol action as an algebraic effect on [kont](https://code.hybscloud.com/kont). A role can send or receive a value, choose or follow a branch, and close its endpoint.
 
-`sess` encodes session types as algebraic effects evaluated by the [kont](https://code.hybscloud.com/kont) effect system. Each protocol step — send, receive, select, offer, close — is an effect that suspends the computation until the transport completes the operation. The transport returns `iox.ErrWouldBlock` at computational boundaries, allowing proactor event loops (e.g., `io_uring`) to multiplex execution without thread-blocking.
+Use **Cont** (`kont.Eff[A]`) when you want the runner to handle retries. `RecvBind` passes the received value to a function that returns the rest of the role’s protocol. `Run` drives both roles. Use `Exec` for one endpoint while its peer runs separately.
 
-Two equivalent API families are available: Cont (closure-based, straightforward to compose) and Expr (frame-based, amortized zero-allocation for hot paths).
+Use **Expr** (`kont.Expr[A]`) when a driver such as an `io_uring` event loop needs to inspect operations or schedule retries. Continuation frames hold the remaining work. `Step` returns a result or a suspension, and `Advance` tries the suspended operation on the endpoint. If `Advance` returns `iox.ErrWouldBlock` on a receive, keep the same suspension and retry after the peer sends.
+
+In both versions, the role receives an `int`, performs a local `Close`, and returns the value. Pair it with a sender using `Run` for Cont or `RunExpr` for Expr.
+
+```go
+contReceiver := sess.RecvBind(sess.CloseDone[int])
+exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
+```
 
 ## Composition Boundary
 
@@ -31,13 +38,13 @@ Requires Go 1.27+.
 
 ## Session Operations
 
-Each operation has a dual. When one endpoint performs an operation, the other must perform its dual.
+Go checks each operation’s payload and reply types. In the peer’s protocol, pair each send with a receive of the same type and each branch selection with an offer. Payloads and branch choices travel in separate queues, so a run can finish even when the roles disagree on action order.
 
-| Operation | Dual | Suspends? |
+| Operation | Dual | Transport backpressure |
 |-----------|------|-----------|
 | `Send[T]` — send a value | `Recv[T]` — receive a value | `iox.ErrWouldBlock` |
 | `SelectL` / `SelectR` — choose a branch | `Offer` — follow the peer's choice | `iox.ErrWouldBlock` |
-| `Close` — end the session | `Close` | Never |
+| `Close` — signal local close | `Close` | Never |
 
 ## Usage
 
@@ -151,13 +158,15 @@ In brief:
 | `Exec` / `ExecExpr` | Run one side on a pre-created endpoint |
 | `Step` + `Advance` | Evaluate one effect at a time for external event loops |
 
-**Cont vs Expr**: Cont is closure-based and straightforward to compose. Expr is frame-based with amortized zero-allocation, suited for hot paths.
+Compare allocation counts for complete protocols and for retrying a full queue. [Benchmark guide](BENCHMARKS.md)
 
 ## Contract
 
 `sess` exposes a trusted-caller transport API. Each endpoint is intended for use by one goroutine at a time, and the hot path intentionally omits concurrent-use guards and post-`Close` checks.
 
 If a payload type is an interface, the value must still carry a concrete dynamic type. Nil interface values such as `any(nil)` or `error(nil)` are outside the contract; if nil is semantically meaningful, use a nil value of a concrete type or wrap it explicitly.
+
+Fused constructors such as `ExprSendThen` build single-use expressions. Build the role again for each run.
 
 ## API
 
