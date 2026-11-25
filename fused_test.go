@@ -13,7 +13,6 @@ import (
 )
 
 func TestSendThen(t *testing.T) {
-	skipRace(t)
 	client := sess.SendThen(42, sess.CloseDone("sent"))
 
 	server := sess.RecvBind(func(n int) kont.Eff[string] {
@@ -30,7 +29,6 @@ func TestSendThen(t *testing.T) {
 }
 
 func TestRecvBind(t *testing.T) {
-	skipRace(t)
 	client := sess.SendThen(99, sess.CloseDone("done"))
 
 	server := sess.RecvBind(func(n int) kont.Eff[int] {
@@ -44,7 +42,6 @@ func TestRecvBind(t *testing.T) {
 }
 
 func TestExprSendThen(t *testing.T) {
-	skipRace(t)
 	client := sess.ExprSendThen(42, sess.ExprCloseDone("sent"))
 
 	server := sess.ExprRecvBind(func(n int) kont.Expr[string] {
@@ -61,7 +58,6 @@ func TestExprSendThen(t *testing.T) {
 }
 
 func TestExprRecvBind(t *testing.T) {
-	skipRace(t)
 	client := sess.ExprSendThen(99, sess.ExprCloseDone("done"))
 
 	server := sess.ExprRecvBind(func(n int) kont.Expr[int] {
@@ -75,7 +71,6 @@ func TestExprRecvBind(t *testing.T) {
 }
 
 func TestFusedProtocol(t *testing.T) {
-	skipRace(t)
 	// Full protocol using only fused API
 	client := sess.SendThen(100,
 		sess.SendThen("hello",

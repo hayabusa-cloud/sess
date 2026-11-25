@@ -13,7 +13,6 @@ import (
 )
 
 func TestReifyContToExpr(t *testing.T) {
-	skipRace(t)
 	// Cont protocol → Reify → execExpr
 	cont := sess.SendThen(42,
 		sess.RecvBind(func(s string) kont.Eff[string] {
@@ -38,7 +37,6 @@ func TestReifyContToExpr(t *testing.T) {
 }
 
 func TestReflectExprToCont(t *testing.T) {
-	skipRace(t)
 	// Expr protocol → Reflect → exec
 	expr := sess.ExprSendThen(42,
 		sess.ExprRecvBind(func(s string) kont.Expr[string] {
@@ -63,7 +61,6 @@ func TestReflectExprToCont(t *testing.T) {
 }
 
 func TestRoundTripReifyReflect(t *testing.T) {
-	skipRace(t)
 	// Reflect(Reify(cont)) preserves semantics
 	cont := sess.SendThen(7,
 		sess.RecvBind(func(n int) kont.Eff[int] {
@@ -86,7 +83,6 @@ func TestRoundTripReifyReflect(t *testing.T) {
 }
 
 func TestRoundTripReflectReify(t *testing.T) {
-	skipRace(t)
 	// Reify(Reflect(expr)) preserves semantics
 	expr := sess.ExprSendThen(5,
 		sess.ExprRecvBind(func(n int) kont.Expr[int] {
@@ -109,7 +105,6 @@ func TestRoundTripReflectReify(t *testing.T) {
 }
 
 func TestBridgeSelectOffer(t *testing.T) {
-	skipRace(t)
 	// Branch protocols survive Cont→Expr conversion
 	cont := sess.SelectLThen(
 		sess.SendThen(33, sess.CloseDone("left")),

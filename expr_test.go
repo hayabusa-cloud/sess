@@ -13,7 +13,6 @@ import (
 )
 
 func TestExprSendRecv(t *testing.T) {
-	skipRace(t)
 	// !int.?string.end ↔ ?int.!string.end
 	client := sess.ExprSendThen(42,
 		sess.ExprRecvBind(func(s string) kont.Expr[string] {
@@ -46,7 +45,6 @@ func TestExprSendThenPreservesNextInput(t *testing.T) {
 }
 
 func TestExprSendRecvMultiple(t *testing.T) {
-	skipRace(t)
 	// !int.!int.?int.end ↔ ?int.?int.!int.end
 	client := sess.ExprSendThen(10,
 		sess.ExprSendThen(20,
@@ -72,7 +70,6 @@ func TestExprSendRecvMultiple(t *testing.T) {
 }
 
 func TestExprSelectOfferLeft(t *testing.T) {
-	skipRace(t)
 	// SelectL.!int.end ↔ Offer.?int.end
 	client := sess.ExprSelectLThen(
 		sess.ExprSendThen(99, sess.ExprCloseDone("left")),
@@ -99,7 +96,6 @@ func TestExprSelectOfferLeft(t *testing.T) {
 }
 
 func TestExprSelectOfferRight(t *testing.T) {
-	skipRace(t)
 	// SelectR.!string.end ↔ Offer.?string.end
 	client := sess.ExprSelectRThen(
 		sess.ExprSendThen("hello", sess.ExprCloseDone("right")),
@@ -126,7 +122,6 @@ func TestExprSelectOfferRight(t *testing.T) {
 }
 
 func TestExprCloseOnly(t *testing.T) {
-	skipRace(t)
 	// end ↔ end
 	a := sess.ExprCloseDone("a")
 	b := sess.ExprCloseDone("b")
@@ -141,7 +136,6 @@ func TestExprCloseOnly(t *testing.T) {
 }
 
 func TestExprFusedProtocol(t *testing.T) {
-	skipRace(t)
 	// Full protocol using only Expr fused API
 	client := sess.ExprSendThen(100,
 		sess.ExprSendThen("hello",
@@ -169,7 +163,6 @@ func TestExprFusedProtocol(t *testing.T) {
 }
 
 func TestExprSelectOfferReverse(t *testing.T) {
-	skipRace(t)
 	// Server selects, client offers — exercises epB.signal and epA.await
 	server := sess.ExprSelectLThen(
 		sess.ExprSendThen(77, sess.ExprCloseDone("selected")),
@@ -196,7 +189,6 @@ func TestExprSelectOfferReverse(t *testing.T) {
 }
 
 func TestExprBidirectional(t *testing.T) {
-	skipRace(t)
 	// !int.?string.!bool.end ↔ ?int.!string.?bool.end
 	client := sess.ExprSendThen(7,
 		sess.ExprRecvBind(func(s string) kont.Expr[string] {

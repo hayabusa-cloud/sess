@@ -31,7 +31,6 @@ func requireSessionThrow[E comparable](t *testing.T, thrown *E, want E) {
 }
 
 func TestExecErrorSuccess(t *testing.T) {
-	skipRace(t)
 	// Success path: no error thrown, result is Right
 	client := sess.SendThen(42, sess.CloseDone("ok"))
 	server := sess.RecvBind(func(n int) kont.Eff[string] {
@@ -57,7 +56,6 @@ func TestExecErrorSuccess(t *testing.T) {
 }
 
 func TestExecErrorThrow(t *testing.T) {
-	skipRace(t)
 	// Throw path: client throws, result is Left
 	client := sess.SendThen(42,
 		kont.ThrowError[string, string]("boom"),
@@ -78,7 +76,6 @@ func TestExecErrorThrow(t *testing.T) {
 }
 
 func TestExecErrorCatchRecovery(t *testing.T) {
-	skipRace(t)
 	// Catch recovery: error-only body/handler, then session ops
 	// Catch body and handler must be pure error effects (no session ops).
 	protocol := kont.Bind(
@@ -116,7 +113,6 @@ func TestExecErrorCatchRecovery(t *testing.T) {
 }
 
 func TestExecErrorExprSuccess(t *testing.T) {
-	skipRace(t)
 	// Expr-world success path
 	client := sess.ExprSendThen(42, sess.ExprCloseDone("ok"))
 	server := sess.ExprRecvBind(func(n int) kont.Expr[string] {
@@ -142,7 +138,6 @@ func TestExecErrorExprSuccess(t *testing.T) {
 }
 
 func TestExecErrorExprThrow(t *testing.T) {
-	skipRace(t)
 	// Expr-world throw path
 	client := sess.ExprSendThen(42,
 		kont.ExprThrowError[string, string]("expr-boom"),
@@ -163,7 +158,6 @@ func TestExecErrorExprThrow(t *testing.T) {
 }
 
 func TestRunErrorExprCatchRecovery(t *testing.T) {
-	skipRace(t)
 	client := sess.Reify(kont.Bind(
 		kont.CatchError(
 			kont.ThrowError[string, string]("fail"),
@@ -198,7 +192,6 @@ func TestRunErrorExprCatchRecovery(t *testing.T) {
 }
 
 func TestRunErrorExprThrowKeepsBlockedPeerLocalResultUnresolved(t *testing.T) {
-	skipRace(t)
 	client := kont.ExprThrowError[string, string]("boom")
 	server := sess.ExprRecvBind(func(v int) kont.Expr[string] {
 		return sess.ExprCloseDone(fmt.Sprintf("got %d", v))
@@ -223,7 +216,6 @@ func TestRunErrorExprThrowKeepsBlockedPeerLocalResultUnresolved(t *testing.T) {
 }
 
 func TestRunErrorExprThrowFromServerKeepsBlockedPeerLocalResultUnresolved(t *testing.T) {
-	skipRace(t)
 	client := sess.ExprRecvBind(func(v int) kont.Expr[string] {
 		return sess.ExprCloseDone(fmt.Sprintf("got %d", v))
 	})
@@ -248,7 +240,6 @@ func TestRunErrorExprThrowFromServerKeepsBlockedPeerLocalResultUnresolved(t *tes
 }
 
 func TestRunErrorExprBothSidesThrowUsesFirstObservedSessionThrow(t *testing.T) {
-	skipRace(t)
 	client := kont.ExprThrowError[string, string]("left-boom")
 	server := kont.ExprThrowError[string, string]("right-boom")
 
@@ -271,7 +262,6 @@ func TestRunErrorExprBothSidesThrowUsesFirstObservedSessionThrow(t *testing.T) {
 }
 
 func TestRunErrorExprRetriesBlockedRecvUntilPeerSendSucceeds(t *testing.T) {
-	skipRace(t)
 	client := sess.ExprRecvBind(func(n int) kont.Expr[string] {
 		return sess.ExprCloseDone(fmt.Sprintf("got %d", n))
 	})
@@ -296,7 +286,6 @@ func TestRunErrorExprRetriesBlockedRecvUntilPeerSendSucceeds(t *testing.T) {
 }
 
 func TestRunErrorExprRetriesBlockedRecvBeforeThrow(t *testing.T) {
-	skipRace(t)
 	client := sess.ExprRecvBind(func(n int) kont.Expr[string] {
 		return kont.ExprThrowError[string, string](fmt.Sprintf("boom %d", n))
 	})
@@ -321,43 +310,25 @@ func TestRunErrorExprRetriesBlockedRecvBeforeThrow(t *testing.T) {
 }
 
 func TestStepErrorSuccess(t *testing.T) {
-	skipRace(t)
-	// Stepping with errors: success path
-	client := sess.ExprSendThen(42, sess.ExprCloseDone("ok"))
-	server := sess.ExprRecvBind(func(n int) kont.Expr[string] {
-		return sess.ExprCloseDone(fmt.Sprintf("got %d", n))
-	})
-
-	epA, epB := sess.New()
-
-	var clientResult kont.Either[string, string]
-	done := make(chan struct{})
-	go func() {
-		clientResult = sess.ExecErrorExpr[string](epA, client)
-		close(done)
-	}()
-	serverResult := sess.ExecErrorExpr[string](epB, server)
-	<-done
-
-	if !clientResult.IsRight() {
-		t.Fatalf("client expected Right, got Left")
+	sender, receiver := sess.New()
+	_, send := sess.StepError[string](sess.ExprSendThen(42, kont.ExprReturn("ok")))
+	_, recv := sess.StepError[string](sess.ExprRecvBind(func(n int) kont.Expr[string] {
+		return kont.ExprReturn(fmt.Sprintf("got %d", n))
+	}))
+	if send == nil || recv == nil {
+		t.Fatal("expected pending send and receive")
 	}
-	cv, _ := clientResult.GetRight()
-	if cv != "ok" {
-		t.Fatalf("client got %q, want %q", cv, "ok")
+	sent, next, err := sess.AdvanceError[string](sender, send)
+	if got, ok := sent.GetRight(); !ok || got != "ok" || next != nil || err != nil {
+		t.Fatalf("send returned (%v, %p, %v), want Right(ok) and completion", sent, next, err)
 	}
-	if !serverResult.IsRight() {
-		t.Fatalf("server expected Right, got Left")
-	}
-	sv, _ := serverResult.GetRight()
-	if sv != "got 42" {
-		t.Fatalf("server got %q, want %q", sv, "got 42")
+	received, next, err := sess.AdvanceError[string](receiver, recv)
+	if got, ok := received.GetRight(); !ok || got != "got 42" || next != nil || err != nil {
+		t.Fatalf("receive returned (%v, %p, %v), want Right(got 42) and completion", received, next, err)
 	}
 }
 
-func TestStepErrorThrow(t *testing.T) {
-	skipRace(t)
-	// Stepping with errors: throw path
+func TestExecErrorExprThrowAfterSend(t *testing.T) {
 	protocol := sess.ExprSendThen(1,
 		kont.ExprThrowError[string, string]("step-boom"),
 	)
@@ -373,59 +344,37 @@ func TestStepErrorThrow(t *testing.T) {
 	}
 }
 
-func TestAdvanceErrorWouldBlock(t *testing.T) {
-	skipRace(t)
-	// AdvanceError returns ErrWouldBlock when queue is empty
-	protocol := sess.ExprRecvBind(func(n int) kont.Expr[int] {
-		return sess.ExprCloseDone(n)
+func TestStepErrorThrow(t *testing.T) {
+	const cause = "step-boom"
+	protocol := kont.ExprMap(kont.ExprThrowError[string, int](cause), func(n int) int {
+		t.Fatal("resumed past Throw")
+		return n
 	})
-
-	result, susp := sess.StepError[string, int](protocol)
-	if susp == nil {
-		t.Fatalf("expected suspension, got result %v", result)
+	_, pending := sess.StepError[string](protocol)
+	if pending == nil {
+		t.Fatal("StepError completed before yielding Throw")
 	}
-
-	epA, epB := sess.New()
-
-	// epA's recvQ is empty — should get ErrWouldBlock
-	_, retrySusp, err := sess.AdvanceError[string](epA, susp)
-	if !iox.IsWouldBlock(err) {
-		t.Fatalf("expected ErrWouldBlock, got %v", err)
+	if op, ok := pending.Op().(kont.Throw[string]); !ok || op.Err != cause {
+		t.Fatalf("StepError yielded %v, want Throw(%q)", pending.Op(), cause)
 	}
-	if retrySusp != susp {
-		t.Fatal("suspension should be returned unconsumed on error")
+	ep, _ := sess.New()
+	result, next, err := sess.AdvanceError[string](ep, pending)
+	if msg, ok := result.GetLeft(); !ok || msg != cause || next != nil || err != nil {
+		t.Fatalf("AdvanceError got (%v, %v, %v), want Left(%q) and completion", result, next, err, cause)
 	}
+}
 
-	// Enqueue from peer side, then retry
-	sender := sess.ExprSendThen(99, sess.ExprCloseDone[struct{}](struct{}{}))
-	peerDone := make(chan struct{})
-	go func() {
-		execExpr(epB, sender)
-		close(peerDone)
-	}()
-
-	// Spin-retry AdvanceError until success
-	for {
-		result, susp, err = sess.AdvanceError[string](epA, susp)
-		if err == nil {
-			break
-		}
+func TestAdvanceErrorWouldBlock(t *testing.T) {
+	sender, receiver := sess.New()
+	_, pending := sess.StepError[string](kont.ExprPerform(sess.Recv[int]{}))
+	_, retry, err := sess.AdvanceError[string](receiver, pending)
+	if !iox.IsWouldBlock(err) || retry != pending {
+		t.Fatalf("empty receive returned (%p, %v), want original suspension and backpressure", retry, err)
 	}
-	<-peerDone
-
-	// Drive remaining suspensions
-	for susp != nil {
-		result, susp, err = sess.AdvanceError[string](epA, susp)
-		if err != nil {
-			continue
-		}
-	}
-	if !result.IsRight() {
-		t.Fatalf("expected Right, got Left")
-	}
-	rv, _ := result.GetRight()
-	if rv != 99 {
-		t.Fatalf("result got %d, want 99", rv)
+	advanceOne(t, sender, kont.ExprPerform(sess.Send[int]{Value: 99}))
+	result, next, err := sess.AdvanceError[string](receiver, retry)
+	if got, ok := result.GetRight(); !ok || got != 99 || next != nil || err != nil {
+		t.Fatalf("receive retry returned (%v, %p, %v), want Right(99) and completion", result, next, err)
 	}
 }
 
@@ -476,7 +425,6 @@ func TestExecErrorDispatchUnhandledPanics(t *testing.T) {
 }
 
 func TestLoopWithError(t *testing.T) {
-	skipRace(t)
 	// Combined Loop + Error: loop sends values, throws when reaching a limit
 	client := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 		if i >= 3 {
@@ -505,7 +453,6 @@ func TestLoopWithError(t *testing.T) {
 }
 
 func TestExprLoopWithError(t *testing.T) {
-	skipRace(t)
 	// Combined ExprLoop + Error: loop sends values, throws when reaching a limit
 	client := sess.ExprLoop(0, func(i int) kont.Expr[kont.Either[int, string]] {
 		if i >= 3 {
@@ -618,7 +565,6 @@ func TestExecErrorCatchSuccess(t *testing.T) {
 }
 
 func TestStepErrorPureReturn(t *testing.T) {
-	// wrapRight ReturnFrame fast path: pure value with no effects
 	result, susp := sess.StepError[string, int](kont.ExprReturn(42))
 	if susp != nil {
 		t.Fatal("expected immediate completion, got suspension")

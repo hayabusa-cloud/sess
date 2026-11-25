@@ -13,7 +13,6 @@ import (
 
 // BenchmarkSendRecv measures a single send/recv round-trip.
 func BenchmarkSendRecv(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		sender := sess.SendThen(42, sess.CloseDone(struct{}{}))
@@ -26,7 +25,6 @@ func BenchmarkSendRecv(b *testing.B) {
 
 // BenchmarkProtocol3Step measures a 3-step protocol (send, recv, close).
 func BenchmarkProtocol3Step(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := sess.SendThen(1,
@@ -43,7 +41,6 @@ func BenchmarkProtocol3Step(b *testing.B) {
 
 // BenchmarkSelectOffer measures select/offer branch round-trip.
 func BenchmarkSelectOffer(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		selector := sess.SelectLThen(sess.CloseDone(struct{}{}))
@@ -57,7 +54,6 @@ func BenchmarkSelectOffer(b *testing.B) {
 
 // BenchmarkExprSelectOffer measures Expr-world select/offer branch round-trip.
 func BenchmarkExprSelectOffer(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		selector := sess.ExprSelectLThen(sess.ExprCloseDone(struct{}{}))
@@ -71,7 +67,6 @@ func BenchmarkExprSelectOffer(b *testing.B) {
 
 // BenchmarkExprSendRecv measures Expr-world send/recv round-trip.
 func BenchmarkExprSendRecv(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		sender := sess.ExprSendThen(42, sess.ExprCloseDone(struct{}{}))
@@ -99,7 +94,6 @@ func BenchmarkExprSendRecvStructResult(b *testing.B) {
 
 // BenchmarkExprProtocol3Step measures Expr-world 3-step protocol.
 func BenchmarkExprProtocol3Step(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := sess.ExprSendThen(1,
@@ -139,7 +133,6 @@ func BenchmarkDelegation(b *testing.B) {
 
 // BenchmarkRecLoop measures recursive session protocol via Loop.
 func BenchmarkRecLoop(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, struct{}]] {
@@ -169,7 +162,6 @@ func BenchmarkRecLoop(b *testing.B) {
 
 // BenchmarkExprRecLoop measures Expr-world recursive session protocol via ExprLoop.
 func BenchmarkExprRecLoop(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := sess.ExprLoop(0, func(i int) kont.Expr[kont.Either[int, struct{}]] {
@@ -213,7 +205,6 @@ func BenchmarkExec(b *testing.B) {
 
 // BenchmarkErrorPath measures RunError with error handler dispatch.
 func BenchmarkErrorPath(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := kont.Bind(

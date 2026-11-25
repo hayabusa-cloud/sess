@@ -134,7 +134,6 @@ func TestPairedRunnersPreserveImmediateResults(t *testing.T) {
 }
 
 func TestSendRecv(t *testing.T) {
-	skipRace(t)
 	// !int.?string.end ↔ ?int.!string.end
 	client := sess.SendThen(42,
 		sess.RecvBind(func(s string) kont.Eff[string] {
@@ -158,7 +157,6 @@ func TestSendRecv(t *testing.T) {
 }
 
 func TestSendRecvMultiple(t *testing.T) {
-	skipRace(t)
 	// !int.!int.?int.end ↔ ?int.?int.!int.end
 	client := sess.SendThen(10,
 		sess.SendThen(20,
@@ -184,7 +182,6 @@ func TestSendRecvMultiple(t *testing.T) {
 }
 
 func TestSelectOfferLeft(t *testing.T) {
-	skipRace(t)
 	// SelectL.!int.end ↔ Offer.?int.end
 	client := sess.SelectLThen(
 		sess.SendThen(99, sess.CloseDone("left")),
@@ -211,7 +208,6 @@ func TestSelectOfferLeft(t *testing.T) {
 }
 
 func TestSelectOfferRight(t *testing.T) {
-	skipRace(t)
 	// SelectR.!string.end ↔ Offer.?string.end
 	client := sess.SelectRThen(
 		sess.SendThen("hello", sess.CloseDone("right")),
@@ -238,7 +234,6 @@ func TestSelectOfferRight(t *testing.T) {
 }
 
 func TestCloseOnly(t *testing.T) {
-	skipRace(t)
 	// end ↔ end
 	a := sess.CloseDone("a")
 	b := sess.CloseDone("b")
@@ -253,7 +248,6 @@ func TestCloseOnly(t *testing.T) {
 }
 
 func TestSelectOfferReverse(t *testing.T) {
-	skipRace(t)
 	// Server selects, client offers — exercises epB.signal and epA.await
 	server := sess.SelectLThen(
 		sess.SendThen(77, sess.CloseDone("selected")),
@@ -298,7 +292,6 @@ func TestDispatchUnhandledPanics(t *testing.T) {
 }
 
 func TestBidirectional(t *testing.T) {
-	skipRace(t)
 	// !int.?string.!bool.end ↔ ?int.!string.?bool.end
 	client := sess.SendThen(7,
 		sess.RecvBind(func(s string) kont.Eff[string] {

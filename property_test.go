@@ -17,7 +17,6 @@ import (
 // of integers, the session transport guarantees strict FIFO delivery without
 // loss, duplication, or reordering.
 func TestPropertyTransportFIFO(t *testing.T) {
-	skipRace(t)
 
 	// The property function receives an arbitrary slice of integers.
 	propertyFIFO := func(payload []int) bool {
@@ -70,7 +69,6 @@ func TestPropertyTransportFIFO(t *testing.T) {
 // in a session protocol always cleanly short-circuits the session and returns
 // the exact error value as the Left branch of the Either result.
 func TestPropertyErrorShortCircuit(t *testing.T) {
-	skipRace(t)
 
 	propertyError := func(throwAt uint) bool {
 		throwMsg := "forced_error"
