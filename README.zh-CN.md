@@ -181,33 +181,30 @@ fmt.Println(clientResult, serverResult)
 
 ## 实用范式
 
-成对的带错误处理执行会定义两侧对偶协议，并让 `RunErrorExpr` 在内部创建端点对：
+`RunErrorExpr` 创建一对端点。把请求值从 `42` 改为 `-1`，就能从 `thrown` 中读到服务端拒绝请求的原因。
 
 ```go
-// 1. 用对偶操作分别定义两侧的协议。
-clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
-	func(reply string) kont.Expr[string] {
-		return sess.ExprCloseDone(reply)
-	},
-))
-serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
-	return sess.ExprSendThen(
-		fmt.Sprintf("got %d", n),
-		sess.ExprCloseDone[string]("ok"),
-	)
+type RequestError struct{ Reason string }
+
+client := sess.ExprSendThen(42, sess.ExprRecvBind(sess.ExprCloseDone[string]))
+server := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+	if n < 0 {
+		return kont.ExprThrowError[RequestError, string](RequestError{Reason: "negative request"})
+	}
+	return sess.ExprSendThen(fmt.Sprintf("got %d", n), sess.ExprCloseDone("ok"))
 })
 
-// 2. 同步推进两侧并处理错误。
-type Err struct{ Reason string }
-left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+clientResult, serverResult, thrown := sess.RunErrorExpr[RequestError](client, server)
 if thrown != nil {
-	// 会话被中止；left/right 可能仅承载部分结果。
-	_ = thrown
+	fmt.Println(thrown.Reason)
+	return
 }
-_ = left; _ = right
+reply, _ := clientResult.GetRight()
+status, _ := serverResult.GetRight()
+fmt.Println(reply, status) // got 42 ok
 ```
 
-在 proactor 事件循环中，用 `sess.New()` 创建一对端点。如果 `StepError` 返回挂起句柄，就将它传给 `AdvanceError`。如果 `AdvanceError` 返回 `iox.ErrWouldBlock`，等对端取得进展后，用同一个句柄重试。
+在 proactor 事件循环中处理套接字输入时，用 `sess.New()` 创建一对端点。如果 `StepError` 返回挂起句柄，就将它传给 `AdvanceError`。若接收操作返回 `iox.ErrWouldBlock`，保留这个句柄。等适配器从对端成功发送解码后的值，再用同一个句柄重试接收。
 
 ## 参考文献
 

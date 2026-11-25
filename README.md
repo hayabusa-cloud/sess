@@ -181,33 +181,30 @@ Fused constructors such as `ExprSendThen` build single-use expressions. Build th
 
 ## Practical Recipes
 
-A paired error-aware run defines dual protocols and lets `RunErrorExpr` create the endpoint pair internally:
+`RunErrorExpr` creates the endpoint pair. Change the request from `42` to `-1` to read the server’s rejection from `thrown`.
 
 ```go
-// 1. Define the protocol on each side using the dual operations.
-clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
-	func(reply string) kont.Expr[string] {
-		return sess.ExprCloseDone(reply)
-	},
-))
-serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
-	return sess.ExprSendThen(
-		fmt.Sprintf("got %d", n),
-		sess.ExprCloseDone[string]("ok"),
-	)
+type RequestError struct{ Reason string }
+
+client := sess.ExprSendThen(42, sess.ExprRecvBind(sess.ExprCloseDone[string]))
+server := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+	if n < 0 {
+		return kont.ExprThrowError[RequestError, string](RequestError{Reason: "negative request"})
+	}
+	return sess.ExprSendThen(fmt.Sprintf("got %d", n), sess.ExprCloseDone("ok"))
 })
 
-// 2. Run both sides in lockstep with error handling.
-type Err struct{ Reason string }
-left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+clientResult, serverResult, thrown := sess.RunErrorExpr[RequestError](client, server)
 if thrown != nil {
-	// The session aborted; left/right may carry only partial results.
-	_ = thrown
+	fmt.Println(thrown.Reason)
+	return
 }
-_ = left; _ = right
+reply, _ := clientResult.GetRight()
+status, _ := serverResult.GetRight()
+fmt.Println(reply, status) // got 42 ok
 ```
 
-For a proactor loop, create the endpoints with `sess.New()`. When `StepError` returns a suspension, pass it to `AdvanceError`. If `AdvanceError` returns `iox.ErrWouldBlock`, retry with the same suspension after the peer makes progress.
+For socket input in a proactor loop, create the endpoint pair with `sess.New()` and pass any suspension from `StepError` to `AdvanceError`. If a receive returns `iox.ErrWouldBlock`, keep that suspension. Retry it after the adapter sends the decoded value through the peer endpoint.
 
 ## References
 

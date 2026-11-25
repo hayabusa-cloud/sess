@@ -181,33 +181,30 @@ Los constructores fusionados, como `ExprSendThen`, crean expresiones de un solo 
 
 ## Patrones prácticos
 
-Una ejecución emparejada con manejo de errores define protocolos duales y deja que `RunErrorExpr` cree internamente el par de endpoints:
+`RunErrorExpr` crea ambos extremos de la sesión. Cambie la solicitud de `42` a `-1` para leer en `thrown` el motivo por el que el servidor la rechaza.
 
 ```go
-// 1. Definir el protocolo en cada lado usando las operaciones duales.
-clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
-	func(reply string) kont.Expr[string] {
-		return sess.ExprCloseDone(reply)
-	},
-))
-serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
-	return sess.ExprSendThen(
-		fmt.Sprintf("got %d", n),
-		sess.ExprCloseDone[string]("ok"),
-	)
+type RequestError struct{ Reason string }
+
+client := sess.ExprSendThen(42, sess.ExprRecvBind(sess.ExprCloseDone[string]))
+server := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+	if n < 0 {
+		return kont.ExprThrowError[RequestError, string](RequestError{Reason: "negative request"})
+	}
+	return sess.ExprSendThen(fmt.Sprintf("got %d", n), sess.ExprCloseDone("ok"))
 })
 
-// 2. Avanzar ambos lados al unísono con manejo de errores.
-type Err struct{ Reason string }
-left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+clientResult, serverResult, thrown := sess.RunErrorExpr[RequestError](client, server)
 if thrown != nil {
-	// La sesión se abortó; left/right pueden contener solo resultados parciales.
-	_ = thrown
+	fmt.Println(thrown.Reason)
+	return
 }
-_ = left; _ = right
+reply, _ := clientResult.GetRight()
+status, _ := serverResult.GetRight()
+fmt.Println(reply, status) // got 42 ok
 ```
 
-Para un bucle proactor, cree los endpoints con `sess.New()`. Si `StepError` devuelve una suspensión, pásela a `AdvanceError`. Si `AdvanceError` devuelve `iox.ErrWouldBlock`, reinténtelo con la misma suspensión cuando el otro extremo haya avanzado.
+Para recibir datos de un socket en un bucle proactor, cree el par con `sess.New()` y pase a `AdvanceError` cualquier suspensión que devuelva `StepError`. Si la recepción devuelve `iox.ErrWouldBlock`, conserve esa suspensión. Vuelva a intentarlo con ella cuando el adaptador haya enviado el valor decodificado desde el otro extremo.
 
 ## Referencias
 

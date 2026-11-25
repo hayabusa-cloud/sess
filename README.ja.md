@@ -181,33 +181,30 @@ fmt.Println(clientResult, serverResult)
 
 ## 実用レシピ
 
-エラーを考慮したペア実行では、双対な両側プロトコルを定義し、`RunErrorExpr` に内部でエンドポイントペアを生成させます：
+`RunErrorExpr` がエンドポイントのペアを作成します。リクエストの値を `42` から `-1` に変えると、サーバーがリクエストを拒否し、その理由が `thrown` に返ります。
 
 ```go
-// 1. 双対操作を用いて両側のプロトコルを定義する。
-clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
-	func(reply string) kont.Expr[string] {
-		return sess.ExprCloseDone(reply)
-	},
-))
-serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
-	return sess.ExprSendThen(
-		fmt.Sprintf("got %d", n),
-		sess.ExprCloseDone[string]("ok"),
-	)
+type RequestError struct{ Reason string }
+
+client := sess.ExprSendThen(42, sess.ExprRecvBind(sess.ExprCloseDone[string]))
+server := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+	if n < 0 {
+		return kont.ExprThrowError[RequestError, string](RequestError{Reason: "negative request"})
+	}
+	return sess.ExprSendThen(fmt.Sprintf("got %d", n), sess.ExprCloseDone("ok"))
 })
 
-// 2. 両側を歩調を合わせて駆動し、エラーを処理する。
-type Err struct{ Reason string }
-left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+clientResult, serverResult, thrown := sess.RunErrorExpr[RequestError](client, server)
 if thrown != nil {
-	// セッションが中断された。left/right には部分結果しか含まれない場合がある。
-	_ = thrown
+	fmt.Println(thrown.Reason)
+	return
 }
-_ = left; _ = right
+reply, _ := clientResult.GetRight()
+status, _ := serverResult.GetRight()
+fmt.Println(reply, status) // got 42 ok
 ```
 
-プロアクターのイベントループでは、`sess.New()` でエンドポイントのペアを作成します。`StepError` がサスペンションを返したら、`AdvanceError` に渡します。`AdvanceError` が `iox.ErrWouldBlock` を返した場合は、相手側の処理が進んでから同じサスペンションで再試行します。
+プロアクターのイベントループでソケットからの入力を扱う場合は、`sess.New()` でペアを作り、`StepError` がサスペンションを返したら `AdvanceError` に渡します。受信時に `iox.ErrWouldBlock` が返ったら、そのサスペンションを保持します。アダプターがデコードした値を相手側のエンドポイントから送信できたら、同じサスペンションで受信を再試行します。
 
 ## 参考文献
 
