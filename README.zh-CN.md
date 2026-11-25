@@ -27,7 +27,7 @@
 go get code.hybscloud.com/sess
 ```
 
-需要 Go 1.26+。
+需要 Go 1.27+。
 
 ## 会话操作
 

@@ -27,7 +27,7 @@
 go get code.hybscloud.com/sess
 ```
 
-Go 1.26+ が必要です。
+Go 1.27+ が必要です。
 
 ## セッション操作
 

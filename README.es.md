@@ -27,7 +27,7 @@ Hay dos familias de API equivalentes: Cont (basada en closures, fácil de compon
 go get code.hybscloud.com/sess
 ```
 
-Requiere Go 1.26+.
+Requiere Go 1.27+.
 
 ## Operaciones de sesión
 

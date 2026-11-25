@@ -27,7 +27,7 @@ Deux familles d'API équivalentes sont disponibles : Cont (à base de fermetures
 go get code.hybscloud.com/sess
 ```
 
-Nécessite Go 1.26+.
+Nécessite Go 1.27+.
 
 ## Opérations de session
 

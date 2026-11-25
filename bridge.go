@@ -8,15 +8,15 @@ import (
 	"code.hybscloud.com/kont"
 )
 
-// Reify converts a Cont-world session protocol to Expr-world.
-// The resulting Expr can be evaluated with ExecExpr, RunExpr,
-// or stepped with Step and Advance.
+// Reify runs a protocol to its first return or effect. A completed result is
+// reusable. A pending result and its copies share one invocation. Reify a
+// reusable protocol again to start another run.
 func Reify[A any](m kont.Eff[A]) kont.Expr[A] {
 	return kont.Reify(m)
 }
 
-// Reflect converts an Expr-world session protocol to Cont-world.
-// The resulting Eff can be evaluated with Exec or Run.
+// Reflect converts an expression to a Cont-world protocol for [Exec] or [Run].
+// The protocol can be run again only if the input expression is reusable.
 func Reflect[A any](m kont.Expr[A]) kont.Eff[A] {
 	return kont.Reflect(m)
 }

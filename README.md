@@ -27,7 +27,7 @@ Two equivalent API families are available: Cont (closure-based, straightforward 
 go get code.hybscloud.com/sess
 ```
 
-Requires Go 1.26+.
+Requires Go 1.27+.
 
 ## Session Operations
 
