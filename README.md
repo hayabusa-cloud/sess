@@ -26,7 +26,7 @@ exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
 
 ## Composition Boundary
 
-`sess` owns the session effect signature and the endpoint transport that interprets it. It uses `iox.ErrWouldBlock` as the non-blocking boundary for bounded queues, but does not own the full `iox` outcome algebra; `takt` owns proactor-style scheduling and completion correlation; `cove` owns contextual evidence for suspension-aware composition. Within `sess`, `iox.ErrMore` remains outside the endpoint transport domain and is treated as an unexpected dispatcher failure.
+The endpoints exchange payloads and branch choices through bounded queues. Enqueuing into a full queue or dequeuing from an empty one returns `iox.ErrWouldBlock`. A driver can use `takt` to match backend completions, `tempo` to track event history, and `cove` to check the current context before each attempt. The endpoint transport treats `iox.ErrMore` as a dispatcher error.
 
 ## Installation
 
@@ -48,11 +48,11 @@ Go checks each operation’s payload and reply types. In the peer’s protocol, 
 
 ## Usage
 
-Use `Run` to prototype and validate protocols. Use `Exec` with externally managed endpoints. Use the Expr API (`RunExpr`/`ExecExpr`) when you need stepping control or want to minimize allocation overhead on hot paths.
+Use `Run` to drive both roles on one goroutine, `Exec` for one externally managed endpoint, and `Step` with `Advance` when a driver chooses when to retry.
 
 ### Send and Receive
 
-One side sends a value; the dual side receives it.
+A successful send enqueues the payload. If the sender needs to know that the peer processed it, have the peer send an acknowledgment after processing.
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
@@ -107,23 +107,22 @@ acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
 
 ### Stepping
 
-For proactor event loops (e.g., `io_uring`), `Step` and `Advance` evaluate one effect at a time. Unlike `Run` and `Exec` — which synchronously wait for progress — the stepping API yields `iox.ErrWouldBlock` to the caller, letting the event loop reschedule.
+`Step` exposes the pending receive. `Advance` returns the same suspension while the queue is empty. After the peer sends, retrying that suspension obtains the value.
 
 ```go
-ep, _ := sess.New()
-protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
-_, susp := sess.Step[struct{}](protocol)
-// In a proactor event loop (e.g., io_uring), yield on boundary:
-_, nextSusp, err := sess.Advance(ep, susp)
-if err != nil {
-	return susp // yield to event loop, reschedule when ready
-}
-susp = nextSusp
+sender, receiver := sess.New()
+_, h := sess.Step(kont.ExprPerform(sess.Recv[int]{}))
+_, pending, err := sess.Advance(receiver, h)
+fmt.Println(iox.IsWouldBlock(err), pending == h) // true true
+
+sess.ExecExpr(sender, kont.ExprPerform(sess.Send[int]{Value: 42}))
+value, next, err := sess.Advance(receiver, pending)
+fmt.Println(value, next == nil, err) // 42 true <nil>
 ```
 
 ### Error Handling
 
-Compose session protocols with error effects. `Throw` immediately aborts the paired run. The returned `thrown` value is the session-global uncaught throw cause; check it before interpreting a peer-side `Either`.
+An error-aware paired run ends when it dispatches a matching uncaught `Throw`. Check the returned `thrown` before interpreting the peer’s `Either`.
 
 ```go
 client := kont.ExprThrowError[string, string]("boom")
@@ -208,7 +207,7 @@ if thrown != nil {
 _ = left; _ = right
 ```
 
-For proactor integration, create endpoints with `sess.New()` and drive `StepError` / `AdvanceError` yourself: the suspension yields whenever the underlying transport returns `iox.ErrWouldBlock`, and the loop resumes it when the matching endpoint completes.
+For a proactor loop, create the endpoints with `sess.New()`. When `StepError` returns a suspension, pass it to `AdvanceError`. If `AdvanceError` returns `iox.ErrWouldBlock`, retry with the same suspension after the peer makes progress.
 
 ## References
 
@@ -221,6 +220,7 @@ For proactor integration, create endpoints with `sess.New()` and drive `StepErro
 
 ## Dependencies
 
+- [code.hybscloud.com/atomix](https://code.hybscloud.com/atomix) — Atomic session identifiers and close counts
 - [code.hybscloud.com/kont](https://code.hybscloud.com/kont) — Delimited continuations and algebraic effects
 - [code.hybscloud.com/iox](https://code.hybscloud.com/iox) — Non-blocking semantics (`ErrWouldBlock`, `Backoff`)
 - [code.hybscloud.com/lfq](https://code.hybscloud.com/lfq) — Lock-free FIFO queues

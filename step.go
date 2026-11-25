@@ -21,7 +21,8 @@ func Step[R any](protocol kont.Expr[R]) (R, *kont.Suspension[R]) {
 // On success (nil error), the suspension is consumed and the protocol
 // advances to the next effect or completion.
 // On iox.ErrWouldBlock, the suspension is unconsumed and may be retried
-// after the peer makes progress.
+// after the peer makes progress. Give the live suspension one owner and
+// serialize attempts with discard. A queue action takes effect before Resume.
 func Advance[R any](ep *Endpoint, susp *kont.Suspension[R]) (R, *kont.Suspension[R], error) {
 	sop, ok := susp.Op().(sessionDispatcher)
 	if !ok {

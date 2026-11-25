@@ -26,7 +26,7 @@ exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
 
 ## 合成境界
 
-`sess` はセッションのエフェクトシグネチャと、それを解釈するエンドポイントトランスポートを所有します。有界キュー上のノンブロッキング境界として `iox.ErrWouldBlock` を使いますが、`iox` アウトカム代数全体は所有しません。`takt` は proactor 型のスケジューリングと完了相関を所有し、`cove` はサスペンションを含む合成のためのコンテキスト証拠を所有します。`sess` 内では、`iox.ErrMore` はエンドポイントトランスポート領域の外にあり、予期しないディスパッチャ失敗として扱われます。
+エンドポイントは、容量に上限のあるキューを通じて値や分岐の選択をやり取りします。満杯のキューへの追加や空のキューからの取り出しを試みると、`iox.ErrWouldBlock` が返ります。ドライバは `takt` でバックエンドの完了を要求に対応付け、`tempo` でイベント履歴を追跡し、`cove` で試行のたびに現在のコンテキストを確認できます。エンドポイントのトランスポートでは `iox.ErrMore` をディスパッチャのエラーとして扱います。
 
 ## インストール
 
@@ -48,9 +48,11 @@ Go は各操作のペイロードと応答の型を検査します。相手側�
 
 ## 使い方
 
-プロトコルの試作と検証には `Run` を使用します。外部管理のエンドポイントには `Exec` を使用します。ステッピング制御が必要な場合や、ホットパスでのアロケーションオーバーヘッドを最小化したい場合は Expr API（`RunExpr`/`ExecExpr`）を使用します。
+両方のロールを 1 つのゴルーチンで実行する場合は `Run`、外部で管理する片側のエンドポイントには `Exec`、ドライバが再試行のタイミングを決める場合は `Step` と `Advance` を使用します。
 
 ### 送受信
+
+送信に成功するとペイロードがキューに入ります。相手側で処理が終わったことを送信側が知る必要がある場合は、処理後に相手側から確認応答を返すようにします。
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
@@ -105,23 +107,22 @@ acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
 
 ### ステッピング
 
-proactor イベントループ（例：`io_uring`）向けに、`Step` と `Advance` は一度に1つのエフェクトを評価します。`Run` や `Exec` — 同期的に進行を待つ — とは異なり、ステッピング API は `iox.ErrWouldBlock` を呼び出し元に返し、イベントループが再スケジュールできるようにします。
+`Step` は保留中の受信操作を返します。キューが空の間、`Advance` は同じサスペンションを返します。相手が送信した後、そのサスペンションで再試行すると値を受け取れます。
 
 ```go
-ep, _ := sess.New()
-protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
-_, susp := sess.Step[struct{}](protocol)
-// proactor イベントループ（例: io_uring）では、境界でイールドする:
-_, nextSusp, err := sess.Advance(ep, susp)
-if err != nil {
-	return susp // イベントループへ制御を戻し、準備できたら再スケジュールする
-}
-susp = nextSusp
+sender, receiver := sess.New()
+_, h := sess.Step(kont.ExprPerform(sess.Recv[int]{}))
+_, pending, err := sess.Advance(receiver, h)
+fmt.Println(iox.IsWouldBlock(err), pending == h) // true true
+
+sess.ExecExpr(sender, kont.ExprPerform(sess.Send[int]{Value: 42}))
+value, next, err := sess.Advance(receiver, pending)
+fmt.Println(value, next == nil, err) // 42 true <nil>
 ```
 
 ### エラー処理
 
-セッションプロトコルをエラーエフェクトと合成できます。`Throw` は対になった実行を即座に中断します。返される `thrown` はセッション全体における未捕捉 `Throw` の原因なので、peer 側の `Either` を解釈する前に確認してください。
+エラー処理付きのペア実行は、対象の型に一致する未捕捉の `Throw` を処理すると終了します。相手側の `Either` を解釈する前に、返された `thrown` を確認してください。
 
 ```go
 client := kont.ExprThrowError[string, string]("boom")
@@ -206,7 +207,7 @@ if thrown != nil {
 _ = left; _ = right
 ```
 
-プロアクター統合では `sess.New()` でエンドポイントを作成し、`StepError` / `AdvanceError` を自分で駆動します。下層トランスポートが `iox.ErrWouldBlock` を返すたびに中断がイールドし、対応するエンドポイントが完了したときにループが再開します。
+プロアクターのイベントループでは、`sess.New()` でエンドポイントのペアを作成します。`StepError` がサスペンションを返したら、`AdvanceError` に渡します。`AdvanceError` が `iox.ErrWouldBlock` を返した場合は、相手側の処理が進んでから同じサスペンションで再試行します。
 
 ## 参考文献
 
@@ -219,6 +220,7 @@ _ = left; _ = right
 
 ## 依存関係
 
+- [code.hybscloud.com/atomix](https://code.hybscloud.com/atomix) — セッション識別子とクローズ回数のアトミックな更新
 - [code.hybscloud.com/kont](https://code.hybscloud.com/kont) — 限定継続と代数的エフェクト
 - [code.hybscloud.com/iox](https://code.hybscloud.com/iox) — ノンブロッキングセマンティクス（`ErrWouldBlock`、`Backoff`）
 - [code.hybscloud.com/lfq](https://code.hybscloud.com/lfq) — ロックフリー FIFO キュー

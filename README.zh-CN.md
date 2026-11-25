@@ -26,7 +26,7 @@ exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
 
 ## 组合边界
 
-`sess` 拥有会话效果签名以及解释它的端点传输。它把 `iox.ErrWouldBlock` 用作有界队列上的非阻塞边界，但不拥有完整的 `iox` 结果代数；`takt` 拥有 proactor 风格的调度和完成事件关联；`cove` 拥有面向挂起组合的上下文证据。在 `sess` 内部，`iox.ErrMore` 不属于端点传输域，会被视为意外的调度器失败。
+端点通过有界队列交换数据和分支选择。向已满的队列写入或从空队列读取时，操作会返回 `iox.ErrWouldBlock`。驱动程序可用 `takt` 将后端完成事件与请求对应，用 `tempo` 跟踪事件历史，并在每次尝试前用 `cove` 检查当前上下文。端点传输层将 `iox.ErrMore` 视为分派器错误。
 
 ## 安装
 
@@ -48,9 +48,11 @@ Go 检查每个操作的负载类型和应答类型。在对端的协议中，�
 
 ## 用法
 
-使用 `Run` 进行协议原型设计与验证。对外部管理的端点使用 `Exec`。当需要步进控制，或希望在热路径上尽量减少分配开销时，使用 Expr API（`RunExpr`/`ExecExpr`）。
+用 `Run` 在一个 goroutine 上运行双方，用 `Exec` 驱动一个由外部管理的端点。若由驱动程序决定何时重试，可使用 `Step` 和 `Advance`。
 
 ### 收发
+
+发送成功表示负载已入队。如果发送方需要知道对端已经处理了负载，应让对端在处理后发回确认。
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
@@ -105,23 +107,22 @@ acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
 
 ### 步进
 
-对于 proactor 事件循环（如 `io_uring`），`Step` 和 `Advance` 一次求值一个效果。与 `Run` 和 `Exec` — 同步等待进展 — 不同，步进 API 将 `iox.ErrWouldBlock` 返回给调用者，让事件循环重新调度。
+`Step` 返回待执行的接收操作。队列为空时，`Advance` 返回同一个挂起对象。对端发送后，用该对象重试即可收到负载。
 
 ```go
-ep, _ := sess.New()
-protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
-_, susp := sess.Step[struct{}](protocol)
-// 在 proactor 事件循环（例如 io_uring）中，在边界处让出：
-_, nextSusp, err := sess.Advance(ep, susp)
-if err != nil {
-	return susp // 让出给事件循环，并在就绪后重新调度
-}
-susp = nextSusp
+sender, receiver := sess.New()
+_, h := sess.Step(kont.ExprPerform(sess.Recv[int]{}))
+_, pending, err := sess.Advance(receiver, h)
+fmt.Println(iox.IsWouldBlock(err), pending == h) // true true
+
+sess.ExecExpr(sender, kont.ExprPerform(sess.Send[int]{Value: 42}))
+value, next, err := sess.Advance(receiver, pending)
+fmt.Println(value, next == nil, err) // 42 true <nil>
 ```
 
 ### 错误处理
 
-可以将会话协议与错误效果组合。`Throw` 会立即中止成对执行。返回的 `thrown` 是会话级未捕获 `Throw` 的全局原因；在解释对端 `Either` 之前应先检查它。
+带错误处理的成对运行在分派类型匹配且未被捕获的 `Throw` 时结束。解读对端的 `Either` 之前，先检查返回的 `thrown`。
 
 ```go
 client := kont.ExprThrowError[string, string]("boom")
@@ -206,7 +207,7 @@ if thrown != nil {
 _ = left; _ = right
 ```
 
-用于 proactor 集成时，请用 `sess.New()` 创建端点，并自行驱动 `StepError` / `AdvanceError`：每当底层传输返回 `iox.ErrWouldBlock` 时挂起会让出执行权，事件循环在对端完成时再行恢复。
+在 proactor 事件循环中，用 `sess.New()` 创建一对端点。如果 `StepError` 返回挂起句柄，就将它传给 `AdvanceError`。如果 `AdvanceError` 返回 `iox.ErrWouldBlock`，等对端取得进展后，用同一个句柄重试。
 
 ## 参考文献
 
@@ -219,6 +220,7 @@ _ = left; _ = right
 
 ## 依赖
 
+- [code.hybscloud.com/atomix](https://code.hybscloud.com/atomix) — 原子更新会话标识符和关闭计数
 - [code.hybscloud.com/kont](https://code.hybscloud.com/kont) — 限界续体和代数效果
 - [code.hybscloud.com/iox](https://code.hybscloud.com/iox) — 非阻塞语义（`ErrWouldBlock`、`Backoff`）
 - [code.hybscloud.com/lfq](https://code.hybscloud.com/lfq) — 无锁 FIFO 队列

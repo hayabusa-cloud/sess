@@ -26,7 +26,7 @@ exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
 
 ## Límite de composición
 
-`sess` es dueño de la signatura de efectos de sesión y del transporte de endpoints que la interpreta. Usa `iox.ErrWouldBlock` como frontera no bloqueante para colas acotadas, pero no posee el álgebra completa de resultados de `iox`; `takt` posee la planificación de estilo proactor y la correlación de finalizaciones; `cove` posee la evidencia contextual para composición alrededor de suspensiones. Dentro de `sess`, `iox.ErrMore` queda fuera del dominio de transporte de endpoints y se trata como un fallo inesperado del despachador.
+Los dos extremos intercambian datos y elecciones de rama mediante colas de capacidad limitada. Intentar insertar en una cola llena o extraer de una cola vacía devuelve `iox.ErrWouldBlock`. El controlador puede usar `takt` para asociar las finalizaciones con sus solicitudes, `tempo` para seguir el historial de eventos y `cove` para comprobar el contexto antes de cada intento. El transporte trata `iox.ErrMore` como un error del despachador.
 
 ## Instalación
 
@@ -48,11 +48,11 @@ Go comprueba los tipos de los datos y de la respuesta de cada operación. En el 
 
 ## Uso
 
-Use `Run` para prototipar y validar protocolos. Use `Exec` con endpoints administrados externamente. Use la API Expr (`RunExpr`/`ExecExpr`) cuando necesite control paso a paso o quiera minimizar la sobrecarga de asignación en rutas críticas.
+Use `Run` para ejecutar ambos roles en una goroutine, `Exec` para un endpoint gestionado externamente y `Step` con `Advance` cuando el controlador decide cuándo reintentar.
 
 ### Envío y recepción
 
-Un lado envía un valor; el lado dual lo recibe.
+Un envío correcto encola la carga. Si el emisor necesita saber que el otro extremo la ha procesado, haga que este envíe una confirmación después de procesarla.
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
@@ -107,23 +107,22 @@ acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
 
 ### Paso a paso
 
-Para bucles de eventos proactor (p. ej. `io_uring`), `Step` y `Advance` evalúan un efecto a la vez. A diferencia de `Run` y `Exec` —que esperan los progresos de forma síncrona—, la API de stepping devuelve `iox.ErrWouldBlock` al llamador, permitiendo al bucle de eventos reprogramar.
+`Step` expone la recepción pendiente. Mientras la cola está vacía, `Advance` devuelve la misma suspensión. Cuando el otro extremo envía el valor, un nuevo intento con esa suspensión lo recibe.
 
 ```go
-ep, _ := sess.New()
-protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
-_, susp := sess.Step[struct{}](protocol)
-// En un bucle de eventos proactor (p. ej. io_uring), ceder en la frontera:
-_, nextSusp, err := sess.Advance(ep, susp)
-if err != nil {
-	return susp // ceder al bucle de eventos; reprogramar cuando esté listo
-}
-susp = nextSusp
+sender, receiver := sess.New()
+_, h := sess.Step(kont.ExprPerform(sess.Recv[int]{}))
+_, pending, err := sess.Advance(receiver, h)
+fmt.Println(iox.IsWouldBlock(err), pending == h) // true true
+
+sess.ExecExpr(sender, kont.ExprPerform(sess.Send[int]{Value: 42}))
+value, next, err := sess.Advance(receiver, pending)
+fmt.Println(value, next == nil, err) // 42 true <nil>
 ```
 
 ### Manejo de errores
 
-Componga protocolos de sesión con efectos de error. `Throw` aborta de inmediato la ejecución emparejada. El valor `thrown` devuelto es la causa global de un `Throw` no capturado; revíselo antes de interpretar el `Either` del par.
+Una ejecución emparejada con manejo de errores termina cuando procesa un `Throw` del tipo esperado que no se ha capturado. Compruebe el valor devuelto en `thrown` antes de interpretar el `Either` del otro extremo.
 
 ```go
 client := kont.ExprThrowError[string, string]("boom")
@@ -208,7 +207,7 @@ if thrown != nil {
 _ = left; _ = right
 ```
 
-Para integración con un proactor, cree endpoints con `sess.New()` y conduzca `StepError` / `AdvanceError` directamente: la suspensión cede cada vez que el transporte subyacente devuelve `iox.ErrWouldBlock`, y el bucle la reanuda cuando el endpoint correspondiente completa.
+Para un bucle proactor, cree los endpoints con `sess.New()`. Si `StepError` devuelve una suspensión, pásela a `AdvanceError`. Si `AdvanceError` devuelve `iox.ErrWouldBlock`, reinténtelo con la misma suspensión cuando el otro extremo haya avanzado.
 
 ## Referencias
 
@@ -221,6 +220,7 @@ Para integración con un proactor, cree endpoints con `sess.New()` y conduzca `S
 
 ## Dependencias
 
+- [code.hybscloud.com/atomix](https://code.hybscloud.com/atomix) — Identificadores de sesión y contadores de cierre atómicos
 - [code.hybscloud.com/kont](https://code.hybscloud.com/kont) — Continuaciones delimitadas y efectos algebraicos
 - [code.hybscloud.com/iox](https://code.hybscloud.com/iox) — Semántica no bloqueante (`ErrWouldBlock`, `Backoff`)
 - [code.hybscloud.com/lfq](https://code.hybscloud.com/lfq) — Colas FIFO sin bloqueo
