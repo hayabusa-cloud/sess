@@ -13,6 +13,18 @@ import (
 	"code.hybscloud.com/sess"
 )
 
+func ExampleRunExpr() {
+	exchange := func(n int) int {
+		_, received := sess.RunExpr(
+			sess.ExprSendThen(n, sess.ExprCloseDone(struct{}{})),
+			sess.ExprRecvBind(sess.ExprCloseDone[int]),
+		)
+		return received
+	}
+	fmt.Println(exchange(21), exchange(42))
+	// Output: 21 42
+}
+
 func TestStepAdvanceSendRecv(t *testing.T) {
 	skipRace(t)
 	// Full protocol via Step+Advance loop

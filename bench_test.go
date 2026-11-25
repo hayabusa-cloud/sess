@@ -82,6 +82,21 @@ func BenchmarkExprSendRecv(b *testing.B) {
 	}
 }
 
+// BenchmarkExprSendRecvStructResult returns a four-counter summary from the sender.
+func BenchmarkExprSendRecvStructResult(b *testing.B) {
+	type counts struct{ Sent, Received, SentBytes, ReceivedBytes int64 }
+	sent := counts{Sent: 1, SentBytes: 8}
+	b.ReportAllocs()
+	for b.Loop() {
+		sender := sess.ExprSendThen(int64(42), sess.ExprCloseDone(sent))
+		receiver := sess.ExprRecvBind(sess.ExprCloseDone[int64])
+		result, value := sess.RunExpr(sender, receiver)
+		if result != sent || value != 42 {
+			b.Fatal(result, value)
+		}
+	}
+}
+
 // BenchmarkExprProtocol3Step measures Expr-world 3-step protocol.
 func BenchmarkExprProtocol3Step(b *testing.B) {
 	skipRace(b)

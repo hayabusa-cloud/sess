@@ -36,6 +36,15 @@ func TestExprSendRecv(t *testing.T) {
 	}
 }
 
+func TestExprSendThenPreservesNextInput(t *testing.T) {
+	addOne := kont.MapFrame[int, int]{F: func(n int) int { return n + 1 }, Next: kont.ReturnFrame{}}
+	next := kont.Expr[int]{Value: 41, Frame: addOne.AsFrame()}
+	result, received := sess.RunExpr(sess.ExprSendThen(7, next), kont.ExprPerform(sess.Recv[int]{}))
+	if result != 42 || received != 7 {
+		t.Fatalf("RunExpr returned (%d, %d), want (42, 7)", result, received)
+	}
+}
+
 func TestExprSendRecvMultiple(t *testing.T) {
 	skipRace(t)
 	// !int.!int.?int.end ↔ ?int.?int.!int.end

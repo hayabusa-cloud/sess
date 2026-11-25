@@ -25,8 +25,12 @@
 //
 //   - Operations: [Send], [Recv], [Close], [SelectL], [SelectR], [Offer]. Endpoint delegation is [Send]/[Recv] of [*Endpoint].
 //   - Cont-world: [SendThen], [RecvBind], [CloseDone], [SelectLThen], [SelectRThen], [OfferBranch].
-//   - Expr-world: Zero-allocation variants like [ExprSendThen], [ExprRecvBind], etc. Bridge via [Reify] and [Reflect].
+//   - Expr-world: Frame-based constructors such as [ExprSendThen] and [ExprRecvBind]. Bridge via [Reify] and [Reflect].
 //   - Recursive: [Loop] and [ExprLoop] for trampoline-based iterative protocols.
+//
+// [ExprSendThen], [ExprRecvBind], [ExprCloseDone], [ExprSelectLThen],
+// [ExprSelectRThen], and [ExprOfferBranch] build single-use expressions.
+// Construct the entire role, including any fused suffix, afresh for each run.
 //
 // # Integration
 //
