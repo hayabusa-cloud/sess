@@ -28,11 +28,18 @@ func (h sessionErrorHandler[E, A]) Dispatch(op kont.Operation) (kont.Resumed, bo
 	}); ok {
 		v, _ := eop.DispatchError(h.errCtx)
 		if h.errCtx.HasErr {
-			return kont.Left[E, A](h.errCtx.Err), false
+			return nil, false
 		}
 		return v, true
 	}
 	panic("sess: unhandled effect in SessionErrorHandler")
+}
+
+func (h sessionErrorHandler[E, A]) result(value A) kont.Either[E, A] {
+	if h.errCtx.HasErr {
+		return kont.Left[E, A](h.errCtx.Err)
+	}
+	return kont.Right[E](value)
 }
 
 // ExecError runs a Cont-world session protocol with error handling on a pre-created endpoint.
@@ -40,28 +47,9 @@ func (h sessionErrorHandler[E, A]) Dispatch(op kont.Operation) (kont.Resumed, bo
 // Blocks on iox.ErrWouldBlock via adaptive backoff (iox.Backoff),
 // without spawning goroutines or creating channels.
 func ExecError[E, R any](ep *Endpoint, protocol kont.Eff[R]) kont.Either[E, R] {
-	wrapped := kont.Map[kont.Resumed, R, kont.Either[E, R]](protocol, func(r R) kont.Either[E, R] {
-		return kont.Right[E, R](r)
-	})
 	var errCtx kont.ErrorContext[E]
 	h := sessionErrorHandler[E, R]{ctx: &ep.ctx, errCtx: &errCtx}
-	return kont.Handle(wrapped, h)
-}
-
-func rightUnwind[E, R any](_, _, _, current kont.Erased) (kont.Erased, kont.Frame) {
-	return kont.Erased(kont.Right[E, R](current.(R))), kont.ReturnFrame{}
-}
-
-// wrapRight wraps a protocol Expr[R] into Expr[Either[E, R]] using a pooled UnwindFrame.
-func wrapRight[E, R any](protocol kont.Expr[R]) kont.Expr[kont.Either[E, R]] {
-	if _, ok := protocol.Frame.(kont.ReturnFrame); ok {
-		return kont.ExprReturn(kont.Right[E, R](protocol.Value))
-	}
-	uf := kont.AcquireUnwindFrame()
-	uf.Unwind = rightUnwind[E, R]
-	return kont.Expr[kont.Either[E, R]]{
-		Frame: kont.ChainFrames(protocol.Frame, uf),
-	}
+	return h.result(kont.Handle(protocol, h))
 }
 
 // ExecErrorExpr runs an Expr-world session protocol with error handling on a pre-created endpoint.
@@ -69,10 +57,9 @@ func wrapRight[E, R any](protocol kont.Expr[R]) kont.Expr[kont.Either[E, R]] {
 // Blocks on iox.ErrWouldBlock via adaptive backoff (iox.Backoff),
 // without spawning goroutines or creating channels.
 func ExecErrorExpr[E, R any](ep *Endpoint, protocol kont.Expr[R]) kont.Either[E, R] {
-	wrapped := wrapRight[E, R](protocol)
 	var errCtx kont.ErrorContext[E]
 	h := sessionErrorHandler[E, R]{ctx: &ep.ctx, errCtx: &errCtx}
-	return kont.HandleExpr(wrapped, h)
+	return h.result(kont.HandleExpr(protocol, h))
 }
 
 // RunError creates a session pair, runs both Cont-world protocols with error
@@ -148,16 +135,27 @@ func RunErrorExpr[E, A, B any](a kont.Expr[A], b kont.Expr[B]) (kont.Either[E, A
 	return resultA, resultB, nil
 }
 
-// StepError evaluates a session protocol with error support until the first
-// effect suspension. Returns (Either[E, R], nil) on completion or error,
-// or (zero, suspension) if pending.
+// StepError runs a protocol to its first return or operation. A return yields
+// Right(result) and a nil suspension. An operation, including Throw, yields a
+// suspension for AdvanceError.
 func StepError[E, R any](protocol kont.Expr[R]) (kont.Either[E, R], *kont.Suspension[kont.Either[E, R]]) {
-	return kont.StepExpr(wrapRight[E, R](protocol))
+	if _, done := protocol.Frame.(kont.ReturnFrame); done {
+		return kont.Right[E](protocol.Value), nil
+	}
+	frame := enterExpr(protocol, rightFrame[E, R]{})
+	return kont.StepExpr(kont.ExprSuspend[kont.Either[E, R]](frame))
 }
 
-// AdvanceError dispatches the suspended operation on the endpoint.
-// Session ops are non-blocking (ErrWouldBlock). Error ops are eager:
-// Throw discards the suspension and returns Left.
+type rightFrame[E, R any] struct{ kont.ReturnFrame }
+
+func (rightFrame[E, R]) Unwind(v kont.Erased) (kont.Erased, kont.Frame) {
+	return kont.Right[E](resultOrZero[R](v)), kont.ReturnFrame{}
+}
+
+// AdvanceError dispatches the suspended operation on the endpoint. On
+// iox.ErrWouldBlock it returns the same suspension for retry. A matching Throw
+// discards the suspension and returns Left. As with [Advance], one owner
+// serializes attempts with discard.
 func AdvanceError[E, R any](ep *Endpoint, susp *kont.Suspension[kont.Either[E, R]]) (kont.Either[E, R], *kont.Suspension[kont.Either[E, R]], error) {
 	// Session ops: non-blocking dispatch
 	if sop, ok := susp.Op().(sessionDispatcher); ok {

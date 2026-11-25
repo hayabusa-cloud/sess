@@ -196,6 +196,59 @@ func TestExprLoopPureStep(t *testing.T) {
 	}
 }
 
+func TestExprLoopPreservesStepInput(t *testing.T) {
+	type choice = kont.Either[int, int]
+	frame := &kont.MapFrame[any, any]{
+		F: func(v any) any {
+			n, _ := v.(choice).GetLeft()
+			return kont.Left[int, int](n + 1)
+		},
+		Next: kont.ReturnFrame{},
+	}
+	m := sess.ExprLoop(41, func(n int) kont.Expr[choice] {
+		if n == 41 {
+			return kont.Expr[choice]{Value: kont.Left[int, int](n), Frame: frame}
+		}
+		return kont.ExprReturn(kont.Right[int](n))
+	})
+	if n := kont.RunPure(m); n != 42 {
+		t.Fatalf("got %d, want 42", n)
+	}
+}
+
+func TestLoopNilResult(t *testing.T) {
+	type choice = kont.Either[int, error]
+	done := kont.Right[int, error](nil)
+	cps := sess.Loop(0, func(int) kont.Eff[choice] { return kont.Pure(done) })
+	if err, pending := kont.Step(cps); err != nil || pending != nil {
+		t.Fatalf("Loop returned (%v, %v), want (nil, nil)", err, pending)
+	}
+	pure := sess.ExprLoop(0, func(int) kont.Expr[choice] { return kont.ExprReturn(done) })
+	if err := kont.RunPure(pure); err != nil {
+		t.Fatalf("pure loop returned %v", err)
+	}
+	ep, _ := sess.New()
+	withClose := sess.ExprLoop(0, func(int) kont.Expr[choice] { return sess.ExprCloseDone(done) })
+	if err := sess.ExecExpr(ep, withClose); err != nil {
+		t.Fatalf("loop returned %v after Close", err)
+	}
+}
+
+func TestExprLoopZeroStepContinues(t *testing.T) {
+	type choice = kont.Either[int, string]
+	// A bare nil returned by this frame is the zero choice, Left(0).
+	frame := &kont.MapFrame[any, any]{F: func(any) any { return nil }, Next: kont.ReturnFrame{}}
+	m := sess.ExprLoop(1, func(n int) kont.Expr[choice] {
+		if n == 0 {
+			return kont.ExprReturn(kont.Right[int]("done"))
+		}
+		return kont.Expr[choice]{Frame: frame}
+	})
+	if got := kont.RunPure(m); got != "done" {
+		t.Fatalf("got %q, want done", got)
+	}
+}
+
 func TestExprLoopDeepPureStackSafe(t *testing.T) {
 	const depth = 5000000
 	result := kont.RunPure(sess.ExprLoop(depth, func(i int) kont.Expr[kont.Either[int, int]] {

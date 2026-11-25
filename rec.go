@@ -21,20 +21,12 @@ func Loop[S, A any](initial S, step func(S) kont.Eff[kont.Either[S, A]]) kont.Ef
 	})
 }
 
-func exprLoopUnwind[S, A any](data, _, _, current kont.Erased) (kont.Erased, kont.Frame) {
-	step := data.(func(S) kont.Expr[kont.Either[S, A]])
-	e := current.(kont.Either[S, A])
-	if left, ok := e.GetLeft(); ok {
-		return exprLoopIter[S, A](left, step)
-	}
-	right, _ := e.GetRight()
-	return kont.Erased(right), kont.ReturnFrame{}
-}
-
-// exprLoopIter is the iterative core shared by ExprLoop and exprLoopUnwind.
-// It loops over pure completed steps without growing the Go stack, and returns
-// a frame chain when the step suspends on an effect.
-func exprLoopIter[S, A any](s S, step func(S) kont.Expr[kont.Either[S, A]]) (kont.Erased, kont.Frame) {
+// ExprLoop runs a recursive session protocol (Expr-world).
+// Left supplies the next state. Right supplies the final result.
+// Completed steps iterate without growing the Go stack. If a step returns a
+// deferred expression, build a fresh loop for each run.
+func ExprLoop[S, A any](initial S, step func(S) kont.Expr[kont.Either[S, A]]) kont.Expr[A] {
+	s := initial
 	for {
 		m := step(s)
 		if _, ok := m.Frame.(kont.ReturnFrame); ok {
@@ -43,27 +35,23 @@ func exprLoopIter[S, A any](s S, step func(S) kont.Expr[kont.Either[S, A]]) (kon
 				continue
 			}
 			right, _ := m.Value.GetRight()
-			return kont.Erased(right), kont.ReturnFrame{}
+			return kont.ExprReturn(right)
 		}
-		bf := kont.AcquireUnwindFrame()
-		bf.Data1 = step
-		bf.Unwind = exprLoopUnwind[S, A]
-		return kont.Erased(nil), kont.ChainFrames(m.Frame, bf)
+		return kont.ExprSuspend[A](enterExpr(m, loopFrame[S, A]{step: step}))
 	}
 }
 
-// ExprLoop runs a recursive session protocol (Expr-world).
-// step returns Left(nextState) to continue or Right(result) to finish.
-// Stack-safe: pure completed steps are iterated without Go stack growth;
-// effectful steps are trampolined through evalFrames via UnwindFrame.
-func ExprLoop[S, A any](initial S, step func(S) kont.Expr[kont.Either[S, A]]) kont.Expr[A] {
-	value, frame := exprLoopIter[S, A](initial, step)
-	var zero A
-	if _, ok := frame.(kont.ReturnFrame); ok {
-		return kont.ExprReturn(value.(A))
+type loopFrame[S, A any] struct {
+	kont.ReturnFrame
+	step func(S) kont.Expr[kont.Either[S, A]]
+}
+
+func (f loopFrame[S, A]) Unwind(v kont.Erased) (kont.Erased, kont.Frame) {
+	e := resultOrZero[kont.Either[S, A]](v)
+	if left, ok := e.GetLeft(); ok {
+		next := ExprLoop(left, f.step)
+		return next.Value, next.Frame
 	}
-	return kont.Expr[A]{
-		Value: zero,
-		Frame: frame,
-	}
+	right, _ := e.GetRight()
+	return right, kont.ReturnFrame{}
 }

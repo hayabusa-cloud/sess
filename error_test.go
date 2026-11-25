@@ -632,6 +632,57 @@ func TestStepErrorPureReturn(t *testing.T) {
 	}
 }
 
+func TestErrorRunnersPreserveFrameInput(t *testing.T) {
+	addOne := &kont.MapFrame[any, any]{
+		F:    func(v any) any { return v.(int) + 1 },
+		Next: kont.ReturnFrame{},
+	}
+	m := kont.Expr[int]{Value: 41, Frame: addOne}
+
+	ep, _ := sess.New()
+	if n, ok := sess.ExecErrorExpr[string](ep, m).GetRight(); !ok || n != 42 {
+		t.Fatalf("ExecErrorExpr got (%d, %t), want Right(42)", n, ok)
+	}
+	result, pending := sess.StepError[string](m)
+	if n, ok := result.GetRight(); !ok || n != 42 || pending != nil {
+		t.Fatalf("StepError got (%d, %t, %v), want Right(42) and completion", n, ok, pending)
+	}
+	left, right, thrown := sess.RunErrorExpr[string](m, kont.ExprReturn("peer"))
+	n, ok := left.GetRight()
+	peer, peerOK := right.GetRight()
+	if thrown != nil || !ok || n != 42 || !peerOK || peer != "peer" {
+		t.Fatalf("RunErrorExpr got (%v, %v, %v), want Right(42), Right(peer) and no throw", left, right, thrown)
+	}
+}
+
+func TestErrorRunnersNormalNil(t *testing.T) {
+	ep, _ := sess.New()
+	m := kont.Suspend(func(func(int) kont.Resumed) kont.Resumed { return nil })
+	if n, ok := sess.ExecError[string](ep, m).GetRight(); !ok || n != 0 {
+		t.Fatalf("ExecError got (%d, %t), want Right(0)", n, ok)
+	}
+	if err, ok := sess.ExecErrorExpr[string](ep, sess.ExprCloseDone[error](nil)).GetRight(); !ok || err != nil {
+		t.Fatalf("ExecErrorExpr got (%v, %t), want Right(nil)", err, ok)
+	}
+	frame := &kont.MapFrame[any, any]{F: func(any) any { return nil }, Next: kont.ReturnFrame{}}
+	result, pending := sess.StepError[string](kont.Expr[int]{Value: 1, Frame: frame})
+	if n, ok := result.GetRight(); !ok || n != 0 || pending != nil {
+		t.Fatalf("StepError got (%d, %t, %v), want Right(0) and completion", n, ok, pending)
+	}
+}
+
+func TestErrorRunnersNilThrow(t *testing.T) {
+	ep, _ := sess.New()
+	result := sess.ExecError[error](ep, kont.ThrowError[error, int](nil))
+	if err, ok := result.GetLeft(); !ok || err != nil {
+		t.Fatalf("ExecError got (%v, %t), want Left(nil)", err, ok)
+	}
+	left, _, thrown := sess.RunErrorExpr[error](kont.ExprThrowError[error, int](nil), kont.ExprReturn("peer"))
+	if err, ok := left.GetLeft(); !ok || err != nil || thrown == nil || *thrown != nil {
+		t.Fatalf("RunErrorExpr got (%v, %v), want Left(nil) and a reported nil throw", left, thrown)
+	}
+}
+
 func TestAdvanceErrorCatchStepping(t *testing.T) {
 	// Stepping through Catch that succeeds — non-throw error dispatch in AdvanceError
 	body := kont.Pure[string]("ok")
