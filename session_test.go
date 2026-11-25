@@ -6,11 +6,91 @@ package sess_test
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
+	"weak"
 
+	"code.hybscloud.com/iox"
 	"code.hybscloud.com/kont"
 	"code.hybscloud.com/sess"
 )
+
+func TestSendPayloadLifetime(t *testing.T) {
+	// Use a payload larger than the runtime's tiny-object allocation batch.
+	type payload [1024]byte
+	for _, path := range []string{"received", "discarded"} {
+		t.Run(path, func(t *testing.T) {
+			sender, receiver := sess.New()
+			if path == "discarded" {
+				for range 4 {
+					_, fill := sess.Step(kont.ExprPerform(sess.Send[*payload]{}))
+					if _, next, err := sess.Advance(sender, fill); err != nil || next != nil {
+						t.Fatalf("fill: next=%v, err=%v", next, err)
+					}
+				}
+			}
+			ref := func() weak.Pointer[payload] {
+				value := new(payload)
+				_, send := sess.Step(kont.ExprPerform(sess.Send[*payload]{Value: value}))
+				_, next, err := sess.Advance(sender, send)
+				if path == "discarded" {
+					if !iox.IsWouldBlock(err) || next != send {
+						t.Fatalf("full queue: next=%v, err=%v", next, err)
+					}
+					send.Discard()
+				} else {
+					if err != nil || next != nil {
+						t.Fatalf("send: next=%v, err=%v", next, err)
+					}
+					_, recv := sess.Step(kont.ExprPerform(sess.Recv[*payload]{}))
+					if got, next, err := sess.Advance(receiver, recv); err != nil || next != nil || got != value {
+						t.Fatalf("receive: got=%p, want=%p, next=%v, err=%v", got, value, next, err)
+					}
+				}
+				return weak.Make(value)
+			}()
+			runtime.GC()
+			if ref.Value() != nil {
+				t.Error("idle endpoints retained the payload")
+			}
+			runtime.KeepAlive(sender)
+			runtime.KeepAlive(receiver)
+		})
+	}
+}
+
+func TestPairedRunnerReleasesCompletedSend(t *testing.T) {
+	type payload [1024]byte
+	for _, runner := range []string{"Run", "RunExpr"} {
+		for _, sender := range []string{"left", "right"} {
+			t.Run(runner+"/sender-"+sender, func(t *testing.T) {
+				// Allocate during execution so the reusable sender holds no payload.
+				left := kont.Bind(kont.Pure(struct{}{}), func(struct{}) kont.Eff[bool] {
+					return sess.SendThen(new(payload), kont.Pure(true))
+				})
+				// Finish reading the payload before checking whether the runner retains it.
+				received := kont.Map(kont.Perform(sess.Recv[*payload]{}), weak.Make[payload])
+				right := kont.Map(received, func(ref weak.Pointer[payload]) bool {
+					runtime.GC()
+					return ref != (weak.Pointer[payload]{}) && ref.Value() == nil
+				})
+				if sender == "right" {
+					left, right = right, left
+				}
+
+				var a, b bool
+				if runner == "Run" {
+					a, b = sess.Run(left, right)
+				} else {
+					a, b = sess.RunExpr(sess.Reify(left), sess.Reify(right))
+				}
+				if !a || !b {
+					t.Fatal("expected the received payload to be collectible while the peer was still running")
+				}
+			})
+		}
+	}
+}
 
 func TestSendRecv(t *testing.T) {
 	skipRace(t)

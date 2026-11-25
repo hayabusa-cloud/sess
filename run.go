@@ -27,32 +27,22 @@ func RunExpr[A, B any](a kont.Expr[A], b kont.Expr[B]) (A, B) {
 	resultB, suspB := Step[B](b)
 	var bo iox.Backoff
 
-	var sopA sessionDispatcher
-	if suspA != nil {
-		sopA = runExprSessionDispatcher(suspA.Op())
-	}
-	var sopB sessionDispatcher
-	if suspB != nil {
-		sopB = runExprSessionDispatcher(suspB.Op())
-	}
+	sopA := pendingDispatcher(suspA)
+	sopB := pendingDispatcher(suspB)
 
 	for suspA != nil || suspB != nil {
 		progress := false
 		if suspA != nil {
 			if v, ok := runExprDispatchSession(&epA.ctx, sopA); ok {
 				resultA, suspA = suspA.Resume(v)
-				if suspA != nil {
-					sopA = runExprSessionDispatcher(suspA.Op())
-				}
+				sopA = pendingDispatcher(suspA)
 				progress = true
 			}
 		}
 		if suspB != nil {
 			if v, ok := runExprDispatchSession(&epB.ctx, sopB); ok {
 				resultB, suspB = suspB.Resume(v)
-				if suspB != nil {
-					sopB = runExprSessionDispatcher(suspB.Op())
-				}
+				sopB = pendingDispatcher(suspB)
 				progress = true
 			}
 		}
@@ -65,8 +55,12 @@ func RunExpr[A, B any](a kont.Expr[A], b kont.Expr[B]) (A, B) {
 	return resultA, resultB
 }
 
-func runExprSessionDispatcher(op kont.Operation) sessionDispatcher {
-	sop, ok := op.(sessionDispatcher)
+// A completed role can release its last operation while its peer continues.
+func pendingDispatcher[R any](susp *kont.Suspension[R]) sessionDispatcher {
+	if susp == nil {
+		return nil
+	}
+	sop, ok := susp.Op().(sessionDispatcher)
 	if !ok {
 		panic("sess: unhandled effect in RunExpr")
 	}

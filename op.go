@@ -20,8 +20,8 @@ type Send[T any] struct {
 // DispatchSession handles Send on the session transport.
 // Non-blocking: returns iox.ErrWouldBlock if the bounded SPSC queue is full.
 func (s Send[T]) DispatchSession(ctx *sessionContext) (kont.Resumed, error) {
-	ctx.sendSlot = s.Value
-	if err := ctx.sendQ.Enqueue(&ctx.sendSlot); err != nil {
+	value := any(s.Value)
+	if err := ctx.sendQ.Enqueue(&value); err != nil {
 		return nil, err
 	}
 	return struct{}{}, nil

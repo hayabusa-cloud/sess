@@ -19,12 +19,11 @@ const channelCapacity = 4
 // sessionContext holds the lock-free transport for a single endpoint.
 // Each direction is a single-producer single-consumer bounded queue.
 type sessionContext struct {
-	sendQ    *lfq.SPSC[any]
-	recvQ    *lfq.SPSC[any]
-	signalQ  *lfq.SPSC[bool]
-	awaitQ   *lfq.SPSC[bool]
-	closed   *atomix.Uint32
-	sendSlot any
+	sendQ   *lfq.SPSC[any]
+	recvQ   *lfq.SPSC[any]
+	signalQ *lfq.SPSC[bool]
+	awaitQ  *lfq.SPSC[bool]
+	closed  *atomix.Uint32
 }
 
 // sessionDispatcher is the structural interface for session operations.
