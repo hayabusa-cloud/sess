@@ -28,6 +28,8 @@ jobs:
           go-version: '1.27.x'
 
       - name: Install Atomix Go 1.27.x
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           lfq=$(go mod download -json code.hybscloud.com/lfq | jq -er .Dir)
           make -C "$lfq" install-compiler COMPILER_DIR="$RUNNER_TEMP/go-atomix"
