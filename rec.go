@@ -50,7 +50,7 @@ func (f loopFrame[S, A]) Unwind(v kont.Erased) (kont.Erased, kont.Frame) {
 	e := resultOrZero[kont.Either[S, A]](v)
 	if left, ok := e.GetLeft(); ok {
 		next := ExprLoop(left, f.step)
-		return next.Value, next.Frame
+		return frameInput(&next), next.Frame
 	}
 	right, _ := e.GetRight()
 	return right, kont.ReturnFrame{}

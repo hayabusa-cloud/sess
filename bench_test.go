@@ -240,6 +240,31 @@ func BenchmarkExprRecvBindStructResult(b *testing.B) {
 	}
 }
 
+// BenchmarkExprRecvLoopStructResult reads a batch size and folds the messages into a 32-byte summary.
+func BenchmarkExprRecvLoopStructResult(b *testing.B) {
+	type summary struct{ remaining, count, sum, last int64 }
+	type decision = kont.Either[summary, summary]
+	read := func(s summary) kont.Expr[decision] {
+		if s.remaining == 0 {
+			return sess.ExprCloseDone(kont.Right[summary](s))
+		}
+		return sess.ExprRecvBind(func(n int64) kont.Expr[decision] {
+			next := summary{remaining: s.remaining - 1, count: s.count + 1, sum: s.sum + n, last: n}
+			return kont.ExprReturn(kont.Left[summary, summary](next))
+		})
+	}
+	start := func(size int64) kont.Expr[summary] { return sess.ExprLoop(summary{remaining: size}, read) }
+	want := summary{count: 2, sum: 15, last: 8}
+	b.ReportAllocs()
+	for b.Loop() {
+		sender := sess.ExprSendThen(int64(2),
+			sess.ExprSendThen(int64(7), sess.ExprSendThen(int64(8), sess.ExprCloseDone(struct{}{}))))
+		if _, got := sess.RunExpr(sender, sess.ExprRecvBind(start)); got != want {
+			b.Fatalf("received summary %v, want %v", got, want)
+		}
+	}
+}
+
 // BenchmarkExprProtocol3Step measures Expr-world 3-step protocol.
 func BenchmarkExprProtocol3Step(b *testing.B) {
 	b.ReportAllocs()

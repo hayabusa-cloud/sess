@@ -8,6 +8,8 @@ GOWORK=off GOTOOLCHAIN=local GOMAXPROCS=2 make bench
 
 The paired workloads build the programs and create their endpoints inside each iteration. Compare the Cont and Expr variants for send/receive, a three-step exchange, branch selection and recursion. `BenchmarkExprSendRecvStructResult` returns a 32-byte summary from the sender. `BenchmarkExprRecvBindStructResult` builds one in the receive callback and returns it after `Close`. Delegation, `Exec` and concurrent stepping also include peer goroutine setup and handoff.
 
+`BenchmarkExprRecvLoopStructResult` receives the batch size, reads that many integer messages in a loop, and returns a 32-byte summary.
+
 `BenchmarkSendRetry` measures one refused `Advance` on a full queue. Each iteration retries the same pending pointer send. `BenchmarkSendRetryBytes` and `BenchmarkSendRetryValue32` repeat it with a nonempty byte slice and a 32-byte value. `BenchmarkSendRetryBytesPreboxed` constructs `Send[any]` before timing so retries reuse the boxed slice. `BenchmarkChannelSendRetry` is the corresponding pointer send on a full buffered Go channel.
 
 `BenchmarkSendDelivery` steps fresh suspensions on an existing endpoint pair. Its pointer, byte-slice and 32-byte cases reuse their expressions. The `FreshBytes/Typed` and `FreshBytes/Preboxed` cases also time constructing each send from a concrete slice. Both deliver to `Recv[[]byte]`.

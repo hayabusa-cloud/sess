@@ -27,8 +27,7 @@ func effectThen[A any](op kont.Operation, next *kont.Expr[A]) *kont.EffectFrame[
 	ef := kont.AcquireEffectFrame()
 	ef.Operation = op
 	ef.Resume = identityResume
-	if _, ok := next.Frame.(*kont.EffectFrame[kont.Erased]); ok {
-		// A following effect reads its own dispatch reply.
+	if frameIgnoresInput(next.Frame) {
 		ef.Next = next.Frame
 		return ef
 	}

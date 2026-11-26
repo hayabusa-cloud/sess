@@ -30,9 +30,17 @@ func enterExpr[A any](m kont.Expr[A], next kont.Frame) kont.Frame {
 	return first
 }
 
-// An explicit effect starts with its dispatch reply. Other frames may read m.Value.
+// An erased EffectFrame reads its reply. An erased ThenFrame reads Second.Value.
+func frameIgnoresInput(frame kont.Frame) bool {
+	if _, ok := frame.(*kont.EffectFrame[kont.Erased]); ok {
+		return true
+	}
+	_, ok := frame.(*kont.ThenFrame[kont.Erased, kont.Erased])
+	return ok
+}
+
 func frameInput[A any](m *kont.Expr[A]) kont.Erased {
-	if _, effect := m.Frame.(*kont.EffectFrame[kont.Erased]); effect {
+	if frameIgnoresInput(m.Frame) {
 		return nil
 	}
 	return m.Value

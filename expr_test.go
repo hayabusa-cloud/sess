@@ -44,6 +44,20 @@ func TestExprSendThenPreservesNextInput(t *testing.T) {
 	}
 }
 
+func TestExprSendRecvEnterThenFrame(t *testing.T) {
+	addOne := kont.MapFrame[int, int]{F: func(n int) int { return n + 1 }, Next: kont.ReturnFrame{}}
+	next := func(n int) kont.Expr[int] {
+		return kont.Expr[int]{Value: -1, Frame: &kont.ThenFrame[any, any]{
+			Second: kont.ExprReturn[any](n),
+			Next:   addOne.AsFrame(),
+		}}
+	}
+	sent, received := sess.RunExpr(sess.ExprSendThen(7, next(41)), sess.ExprRecvBind(next))
+	if sent != 42 || received != 8 {
+		t.Fatalf("RunExpr returned (%d, %d), want (42, 8)", sent, received)
+	}
+}
+
 func TestExprCallbacksPreserveNextInput(t *testing.T) {
 	addOne := kont.MapFrame[int, int]{F: func(n int) int { return n + 1 }, Next: kont.ReturnFrame{}}
 	from := func(n int) kont.Expr[int] { return kont.Expr[int]{Value: n, Frame: addOne.AsFrame()} }

@@ -199,8 +199,8 @@ func TestExprLoopPreservesStepInput(t *testing.T) {
 		},
 		Next: kont.ReturnFrame{},
 	}
-	m := sess.ExprLoop(41, func(n int) kont.Expr[choice] {
-		if n == 41 {
+	m := sess.ExprLoop(40, func(n int) kont.Expr[choice] {
+		if n == 40 || n == 41 {
 			return kont.Expr[choice]{Value: kont.Left[int, int](n), Frame: frame}
 		}
 		return kont.ExprReturn(kont.Right[int](n))
