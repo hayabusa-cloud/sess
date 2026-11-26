@@ -15,7 +15,9 @@
 //     and is treated as an unexpected dispatcher failure.
 //   - Execution: Dual-world API supporting closure-based (Cont-world) and defunctionalized (Expr-world) evaluation.
 //   - Error Handling: Session operations are non-blocking, while error operations short-circuit into [code.hybscloud.com/kont.Either]. Paired error runners also return the first uncaught session-wide thrown cause as `*E`. When that `*E` is non-nil, treat it as the authoritative global outcome and check it before interpreting a peer [code.hybscloud.com/kont.Either], because the non-throwing side may still be locally unresolved.
-//   - Contract: Each [Endpoint] is intended for single-goroutine use over an SPSC transport. Protocol duality and post-[Close] terminality remain caller responsibilities so the hot path stays validation-free. For interface-typed payloads, the value must carry a concrete dynamic type; nil interface payloads such as any(nil) are out of contract.
+//   - Contract: Give each [Endpoint] one owner at a time. Supply dual protocols and
+//     retire the endpoint after [Close]. Each payload must satisfy the peer's [Recv]
+//     type assertion. An interface payload must carry a concrete dynamic type.
 //
 // # API Topologies
 //
@@ -34,7 +36,8 @@
 //   - Stepping: Start an Expr role with [Step] or a Cont role with [code.hybscloud.com/kont.Step].
 //     Pass the resulting suspension to [Advance] to try its session operation.
 //     For typed errors, start with [StepError]. Pass it an Expr directly or [Reify] a Cont first.
-//   - Blocking: [Exec], [Run] (and Error/Expr variants) wait past boundaries using adaptive backoff.
+//   - Blocking: [Exec] and [ExecExpr] back off on a refused operation. [Run] and
+//     [RunExpr] drive both roles and back off only when neither advances.
 //
 // A driver can use takt for backend completions and tempo for event history.
 // To guard a pending operation, call [code.hybscloud.com/cove.CheckSuspension]
