@@ -14,11 +14,15 @@ The paired workloads build the programs and create their endpoints inside each i
 
 `BenchmarkSendDelivery` steps fresh suspensions on an existing endpoint pair. Its pointer, byte-slice and 32-byte cases reuse their expressions. The `FreshBytes/Typed` and `FreshBytes/Preboxed` cases also time constructing each send from a concrete slice. Both deliver to `Recv[[]byte]`.
 
-To compare two revisions, run the same workloads on the same machine and keep all ten samples. For example, run the following command in each checkout, then compare the saved outputs with `benchstat`.
+`BenchmarkRecvRetry` retries the same pending receive on an empty queue. The two ready cases time one `Advance` with an integer already queued and check its return. `BenchmarkRecvReady` returns the integer. `BenchmarkRecvReadyReply` uses it to construct a reply and yields the pending `Send[int]`. Both prepare up to 256 endpoint pairs on one goroutine before timing. The reply case sends the reply and verifies its value at the peer after the timer stops.
+
+`BenchmarkStepAdvance` and `BenchmarkStepAdvancePeerWake` time the whole one-way exchange, including the goroutine and channel. The first polls after a refused receive. The second waits for the sender to finish before retrying. `refusals/op` counts empty receives per exchange. In a request/reply exchange, the sender can signal after enqueueing the request and before waiting for its reply.
+
+To compare revisions, use the same benchmark source on the same machine and compare all ten samples with `benchstat`. Earlier versions of `BenchmarkRecLoop` added a `kont.Bind` after each send and the final close.
 
 ```sh
 GOWORK=off GOTOOLCHAIN=local GOMAXPROCS=2 go test -mod=readonly -run '^$' \
-  -bench '^Benchmark((Expr)?(Send|Recv)|ChannelSend)' \
+  -bench '^Benchmark((Expr)?(Send|Recv|RecLoop)|ChannelSend|StepAdvance)' \
   -benchmem -benchtime=200ms -count=10 -timeout=5m .
 ```
 
