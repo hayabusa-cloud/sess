@@ -38,7 +38,7 @@ Nécessite Go 1.27+.
 
 ## Opérations de session
 
-Go vérifie les types des données et de la réponse de chaque opération. Dans le protocole de l’autre participant, faites correspondre à chaque envoi une réception du même type et à chaque choix de branche une offre. Les données et les choix empruntent des files distinctes, si bien que l’exécution peut se terminer même si les deux rôles ne suivent pas le même ordre.
+Go vérifie les types des données et de la réponse de chaque opération. À chaque envoi doit correspondre un `Recv[T]` tel que l’assertion de type `v.(T)` réussisse pour toute valeur `v` que le rôle peut envoyer à cette étape. Par exemple, `Recv[[]byte]` peut recevoir une valeur de type `[]byte` envoyée avec `Send[any]`. À chaque choix de branche correspond un `Offer`. Les données et les choix empruntent des files distinctes, si bien que l’exécution peut se terminer même si les deux rôles ne suivent pas le même ordre.
 
 | Opération                                   | Duale                             | Contre-pression |
 |---------------------------------------------|-----------------------------------|---------------------|

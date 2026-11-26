@@ -5,6 +5,7 @@
 package sess_test
 
 import (
+	"bytes"
 	"testing"
 
 	"code.hybscloud.com/iox"
@@ -12,13 +13,29 @@ import (
 	"code.hybscloud.com/sess"
 )
 
-// BenchmarkSendRetry measures one refused send on an already full queue.
+// BenchmarkSendRetry measures one refused pointer send on an already full queue.
 func BenchmarkSendRetry(b *testing.B) {
-	sender, _ := sess.New()
 	value := 42
+	benchmarkSendRetry(b, &value)
+}
+
+func BenchmarkSendRetryBytes(b *testing.B) {
+	benchmarkSendRetry(b, []byte("session payload"))
+}
+
+func BenchmarkSendRetryBytesPreboxed(b *testing.B) {
+	benchmarkSendRetry[any](b, []byte("session payload"))
+}
+
+func BenchmarkSendRetryValue32(b *testing.B) {
+	benchmarkSendRetry(b, [4]uint64{1, 2, 3, 4})
+}
+
+func benchmarkSendRetry[T any](b *testing.B, value T) {
+	sender, _ := sess.New()
 	var pending *kont.Suspension[struct{}]
 	for pending == nil {
-		_, h := sess.Step(kont.ExprPerform(sess.Send[*int]{Value: &value}))
+		_, h := sess.Step(kont.ExprPerform(sess.Send[T]{Value: value}))
 		_, next, err := sess.Advance(sender, h)
 		if err == nil && next == nil {
 			continue
@@ -36,6 +53,77 @@ func BenchmarkSendRetry(b *testing.B) {
 			b.Fatalf("retry: next=%v, err=%v", next, err)
 		}
 	}
+}
+
+// BenchmarkSendDelivery measures a successful send and receive on existing endpoints.
+func BenchmarkSendDelivery(b *testing.B) {
+	b.Run("Pointer", func(b *testing.B) {
+		value := 42
+		if got := benchmarkSendDelivery(b, &value); got != &value {
+			b.Fatal("received a different pointer")
+		}
+	})
+	b.Run("Bytes", func(b *testing.B) {
+		value := []byte("session payload")
+		if got := benchmarkSendDelivery(b, value); !bytes.Equal(got, value) {
+			b.Fatalf("received %q, want %q", got, value)
+		}
+	})
+	b.Run("Value32", func(b *testing.B) {
+		value := [4]uint64{1, 2, 3, 4}
+		if got := benchmarkSendDelivery(b, value); got != value {
+			b.Fatalf("received %v, want %v", got, value)
+		}
+	})
+	b.Run("FreshBytes/Typed", func(b *testing.B) {
+		benchmarkFreshByteSend(b, func(v []byte) kont.Expr[struct{}] {
+			return kont.ExprPerform(sess.Send[[]byte]{Value: v})
+		})
+	})
+	b.Run("FreshBytes/Preboxed", func(b *testing.B) {
+		benchmarkFreshByteSend(b, func(v []byte) kont.Expr[struct{}] {
+			return kont.ExprPerform(sess.Send[any]{Value: v})
+		})
+	})
+}
+
+func benchmarkSendDelivery[T any](b *testing.B, value T) T {
+	sender, receiver := sess.New()
+	send := kont.ExprPerform(sess.Send[T]{Value: value})
+	recv := kont.ExprPerform(sess.Recv[T]{})
+	var got T
+	b.ReportAllocs()
+	for b.Loop() {
+		got = benchmarkDeliver(b, sender, receiver, send, recv)
+	}
+	return got
+}
+
+func benchmarkFreshByteSend(b *testing.B, send func([]byte) kont.Expr[struct{}]) {
+	sender, receiver := sess.New()
+	recv := kont.ExprPerform(sess.Recv[[]byte]{})
+	data := []byte("session payload")
+	b.ReportAllocs()
+	for i := 0; b.Loop(); i++ {
+		value := data[i&1:]
+		got := benchmarkDeliver(b, sender, receiver, send(value), recv)
+		if len(got) != len(value) || &got[0] != &value[0] {
+			b.Fatal("received a different byte slice")
+		}
+	}
+}
+
+func benchmarkDeliver[T any](b *testing.B, sender, receiver *sess.Endpoint, send kont.Expr[struct{}], recv kont.Expr[T]) T {
+	_, h := sess.Step(send)
+	if _, next, err := sess.Advance(sender, h); next != nil || err != nil {
+		b.Fatalf("send: next=%v, err=%v", next, err)
+	}
+	_, pending := sess.Step(recv)
+	value, next, err := sess.Advance(receiver, pending)
+	if next != nil || err != nil {
+		b.Fatalf("receive: next=%v, err=%v", next, err)
+	}
+	return value
 }
 
 // BenchmarkChannelSendRetry measures a refused send on a full buffered channel.

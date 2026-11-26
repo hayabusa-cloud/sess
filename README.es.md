@@ -38,7 +38,7 @@ Requiere Go 1.27+.
 
 ## Operaciones de sesión
 
-Go comprueba los tipos de los datos y de la respuesta de cada operación. En el protocolo del otro participante, a cada envío le corresponde una recepción del mismo tipo y a cada elección de rama, una oferta. Los datos y las elecciones viajan por colas separadas, por lo que la ejecución puede terminar aunque los roles discrepen en el orden de las operaciones.
+Go comprueba los tipos de los datos y de la respuesta de cada operación. A cada envío le corresponde un `Recv[T]` tal que la aserción de tipo `v.(T)` se cumpla para cada valor `v` que pueda enviarse en ese paso. Por ejemplo, `Recv[[]byte]` puede recibir un `[]byte` enviado con `Send[any]`. A cada elección de rama le corresponde un `Offer`. Los datos y las elecciones viajan por colas separadas, por lo que la ejecución puede terminar aunque los roles discrepen en el orden de las operaciones.
 
 | Operación                               | Dual                                 | Contrapresión |
 |-----------------------------------------|--------------------------------------|---------------------|

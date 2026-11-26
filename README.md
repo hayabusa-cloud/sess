@@ -38,7 +38,7 @@ Requires Go 1.27+.
 
 ## Session Operations
 
-Go checks each operation’s payload and reply types. In the peer’s protocol, pair each send with a receive of the same type and each branch selection with an offer. Payloads and branch choices travel in separate queues, so a run can finish even when the roles disagree on action order.
+Go checks each operation’s payload and reply types. Pair each send with a `Recv[T]` so that the type assertion `v.(T)` succeeds for every payload `v` at that step. For example, `Recv[[]byte]` can receive a `[]byte` sent with `Send[any]`. Pair each branch selection with an `Offer`. Payloads and branch choices travel in separate queues, so a run can finish even when the roles disagree on action order.
 
 | Operation | Dual | Transport backpressure |
 |-----------|------|-----------|

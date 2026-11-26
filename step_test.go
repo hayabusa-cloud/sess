@@ -5,7 +5,9 @@
 package sess_test
 
 import (
+	"bytes"
 	"fmt"
+	"runtime"
 	"testing"
 
 	"code.hybscloud.com/iox"
@@ -70,6 +72,32 @@ func TestStepAdvanceSendRecv(t *testing.T) {
 	if serverResult != "done" {
 		t.Fatalf("server got %q, want %q", serverResult, "done")
 	}
+}
+
+func TestRecvInterfacePreservesTypedNil(t *testing.T) {
+	sender, receiver := sess.New()
+	var payload *bytes.Buffer
+	advanceOne(t, sender, kont.ExprPerform(sess.Send[*bytes.Buffer]{Value: payload}))
+	got := advanceOne(t, receiver, kont.ExprPerform(sess.Recv[fmt.Stringer]{}))
+	if got != payload {
+		t.Fatalf("received %#v, want (*bytes.Buffer)(nil)", got)
+	}
+}
+
+func TestRecvChecksTypeWhenReplyIsIgnored(t *testing.T) {
+	type message []byte
+	sender, receiver := sess.New()
+	advanceOne(t, sender, kont.ExprPerform(sess.Send[any]{Value: message("hello")}))
+	recv := kont.ExprThen(kont.ExprPerform(sess.Recv[[]byte]{}), kont.ExprReturn(struct{}{}))
+	_, pending := sess.Step(recv)
+	defer pending.Discard()
+	defer func() {
+		got := recover()
+		if _, ok := got.(*runtime.TypeAssertionError); !ok {
+			t.Errorf("receive panic = %v, want a type assertion error", got)
+		}
+	}()
+	sess.Advance(receiver, pending)
 }
 
 func TestStepInspectOperations(t *testing.T) {
@@ -229,27 +257,59 @@ func TestStepAdvanceSelectOfferRight(t *testing.T) {
 }
 
 func TestAdvanceWouldBlockSend(t *testing.T) {
+	payload := []byte("hello!")[:5]
+	t.Run("Typed", func(t *testing.T) {
+		checkSendRetry(t, sess.Send[[]byte]{Value: payload}, payload)
+	})
+	t.Run("Preboxed", func(t *testing.T) {
+		if allocs := checkSendRetry(t, sess.Send[any]{Value: payload}, payload); allocs != 0 {
+			t.Errorf("refused preboxed send: %g allocs/retry, want 0", allocs)
+		}
+	})
+}
+
+func checkSendRetry[T any](t *testing.T, send sess.Send[T], payload []byte) float64 {
+	t.Helper()
 	sender, receiver := sess.New()
 	for n := 1; n <= 4; n++ {
 		advanceOne(t, sender, kont.ExprPerform(sess.Send[int]{Value: n}))
 	}
-	_, pending := sess.Step(kont.ExprPerform(sess.Send[int]{Value: 5}))
-	_, retry, err := sess.Advance(sender, pending)
-	if !iox.IsWouldBlock(err) || retry != pending {
-		t.Fatalf("full queue returned (%p, %v), want original send and backpressure", retry, err)
+	_, pending := sess.Step(kont.ExprPerform(send))
+	if _, ok := pending.Op().(sess.Send[T]); !ok {
+		t.Fatalf("pending operation is %T, want %T", pending.Op(), send)
 	}
+	allocs := testing.AllocsPerRun(100, func() {
+		_, retry, err := sess.Advance(sender, pending)
+		if !iox.IsWouldBlock(err) || retry != pending {
+			t.Fatalf("full queue returned (%p, %v), want original send and backpressure", retry, err)
+		}
+	})
 
 	if got := advanceOne(t, receiver, kont.ExprPerform(sess.Recv[int]{})); got != 1 {
 		t.Fatalf("first receive got %d, want 1", got)
 	}
-	if _, next, err := sess.Advance(sender, retry); err != nil || next != nil {
+	if _, next, err := sess.Advance(sender, pending); err != nil || next != nil {
 		t.Fatalf("send retry returned (%p, %v), want completion", next, err)
 	}
-	for want := 2; want <= 5; want++ {
+	for want := 2; want <= 4; want++ {
 		if got := advanceOne(t, receiver, kont.ExprPerform(sess.Recv[int]{})); got != want {
 			t.Fatalf("received %d, want %d", got, want)
 		}
 	}
+	recv := kont.ExprPerform(sess.Recv[[]byte]{})
+	got := advanceOne(t, receiver, recv)
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("received %q, want %q", got, payload)
+	}
+	if cap(got) != cap(payload) || &got[0] != &payload[0] {
+		t.Fatalf("received slice capacity %d at %p, want %d at %p", cap(got), got, cap(payload), payload)
+	}
+	_, empty := sess.Step(recv)
+	if _, next, err := sess.Advance(receiver, empty); next != empty || !iox.IsWouldBlock(err) {
+		t.Fatalf("receive after delivery returned (%p, %v), want an empty queue", next, err)
+	}
+	empty.Discard()
+	return allocs
 }
 
 func TestAdvanceWouldBlockSelect(t *testing.T) {
