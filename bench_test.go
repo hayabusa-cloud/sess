@@ -5,15 +5,231 @@
 package sess_test
 
 import (
+	"bytes"
 	"testing"
 
+	"code.hybscloud.com/iox"
 	"code.hybscloud.com/kont"
 	"code.hybscloud.com/sess"
 )
 
+// BenchmarkSendRetry measures one refused pointer send on an already full queue.
+func BenchmarkSendRetry(b *testing.B) {
+	value := 42
+	benchmarkSendRetry(b, &value)
+}
+
+func BenchmarkSendRetryBytes(b *testing.B) {
+	benchmarkSendRetry(b, []byte("session payload"))
+}
+
+func BenchmarkSendRetryBytesPreboxed(b *testing.B) {
+	benchmarkSendRetry[any](b, []byte("session payload"))
+}
+
+func BenchmarkSendRetryValue32(b *testing.B) {
+	benchmarkSendRetry(b, [4]uint64{1, 2, 3, 4})
+}
+
+func benchmarkSendRetry[T any](b *testing.B, value T) {
+	sender, _ := sess.New()
+	var pending *kont.Suspension[struct{}]
+	for pending == nil {
+		_, h := sess.Step(kont.ExprPerform(sess.Send[T]{Value: value}))
+		_, next, err := sess.Advance(sender, h)
+		if err == nil && next == nil {
+			continue
+		}
+		if next != h || !iox.IsWouldBlock(err) {
+			b.Fatalf("fill: next=%v, err=%v", next, err)
+		}
+		pending = h
+	}
+	defer pending.Discard()
+	b.ReportAllocs()
+	for b.Loop() {
+		_, next, err := sess.Advance(sender, pending)
+		if next != pending || !iox.IsWouldBlock(err) {
+			b.Fatalf("retry: next=%v, err=%v", next, err)
+		}
+	}
+}
+
+// BenchmarkSendDelivery measures a successful send and receive on existing endpoints.
+func BenchmarkSendDelivery(b *testing.B) {
+	b.Run("Pointer", func(b *testing.B) {
+		value := 42
+		if got := benchmarkSendDelivery(b, &value); got != &value {
+			b.Fatal("received a different pointer")
+		}
+	})
+	b.Run("Bytes", func(b *testing.B) {
+		value := []byte("session payload")
+		if got := benchmarkSendDelivery(b, value); !bytes.Equal(got, value) {
+			b.Fatalf("received %q, want %q", got, value)
+		}
+	})
+	b.Run("Value32", func(b *testing.B) {
+		value := [4]uint64{1, 2, 3, 4}
+		if got := benchmarkSendDelivery(b, value); got != value {
+			b.Fatalf("received %v, want %v", got, value)
+		}
+	})
+	b.Run("FreshBytes/Typed", func(b *testing.B) {
+		benchmarkFreshByteSend(b, func(v []byte) kont.Expr[struct{}] {
+			return kont.ExprPerform(sess.Send[[]byte]{Value: v})
+		})
+	})
+	b.Run("FreshBytes/Preboxed", func(b *testing.B) {
+		benchmarkFreshByteSend(b, func(v []byte) kont.Expr[struct{}] {
+			return kont.ExprPerform(sess.Send[any]{Value: v})
+		})
+	})
+}
+
+func benchmarkSendDelivery[T any](b *testing.B, value T) T {
+	sender, receiver := sess.New()
+	send := kont.ExprPerform(sess.Send[T]{Value: value})
+	recv := kont.ExprPerform(sess.Recv[T]{})
+	var got T
+	b.ReportAllocs()
+	for b.Loop() {
+		got = benchmarkDeliver(b, sender, receiver, send, recv)
+	}
+	return got
+}
+
+func benchmarkFreshByteSend(b *testing.B, send func([]byte) kont.Expr[struct{}]) {
+	sender, receiver := sess.New()
+	recv := kont.ExprPerform(sess.Recv[[]byte]{})
+	data := []byte("session payload")
+	b.ReportAllocs()
+	for i := 0; b.Loop(); i++ {
+		value := data[i&1:]
+		got := benchmarkDeliver(b, sender, receiver, send(value), recv)
+		if len(got) != len(value) || &got[0] != &value[0] {
+			b.Fatal("received a different byte slice")
+		}
+	}
+}
+
+func benchmarkDeliver[T any](b *testing.B, sender, receiver *sess.Endpoint, send kont.Expr[struct{}], recv kont.Expr[T]) T {
+	_, h := sess.Step(send)
+	if _, next, err := sess.Advance(sender, h); next != nil || err != nil {
+		b.Fatalf("send: next=%v, err=%v", next, err)
+	}
+	_, pending := sess.Step(recv)
+	value, next, err := sess.Advance(receiver, pending)
+	if next != nil || err != nil {
+		b.Fatalf("receive: next=%v, err=%v", next, err)
+	}
+	return value
+}
+
+// BenchmarkRecvRetry retries the same pending receive on an empty queue.
+func BenchmarkRecvRetry(b *testing.B) {
+	_, receiver := sess.New()
+	_, pending := sess.Step(kont.ExprPerform(sess.Recv[int]{}))
+	defer pending.Discard()
+	b.ReportAllocs()
+	for b.Loop() {
+		_, next, err := sess.Advance(receiver, pending)
+		if next != pending || !iox.IsWouldBlock(err) {
+			b.Fatalf("empty receive: next=%v, err=%v", next, err)
+		}
+	}
+}
+
+// BenchmarkRecvReady completes a pending receive with an already queued integer.
+func BenchmarkRecvReady(b *testing.B) {
+	benchmarkRecvReady(b, false)
+}
+
+// BenchmarkRecvReadyReply receives a queued integer and yields a send of that value.
+func BenchmarkRecvReadyReply(b *testing.B) {
+	benchmarkRecvReady(b, true)
+}
+
+func benchmarkRecvReady(b *testing.B, withReply bool) {
+	send := kont.ExprPerform(sess.Send[int]{Value: 42})
+	recv := kont.ExprPerform(sess.Recv[int]{})
+	role := recv
+	if withReply {
+		role = kont.ExprBind(recv, func(n int) kont.Expr[int] {
+			return sess.ExprSendThen(n, kont.ExprReturn(n))
+		})
+	}
+	// Batch the timer calls. Each endpoint has one pending receive.
+	pairs := make([]struct {
+		sender, receiver *sess.Endpoint
+		pending          *kont.Suspension[int]
+	}, min(256, b.N))
+	for i := range pairs {
+		pairs[i].sender, pairs[i].receiver = sess.New()
+	}
+	b.ReportAllocs()
+	b.StopTimer()
+	b.ResetTimer()
+	for remaining := b.N; remaining > 0; {
+		batch := pairs[:min(remaining, len(pairs))]
+		for i := range batch {
+			pair := &batch[i]
+			_, h := sess.Step(send)
+			if _, next, err := sess.Advance(pair.sender, h); next != nil || err != nil {
+				b.Fatalf("prepare send: next=%v, err=%v", next, err)
+			}
+			_, pair.pending = sess.Step(role)
+		}
+		remaining -= len(batch)
+		b.StartTimer()
+		for i := range batch {
+			pair := &batch[i]
+			got, next, err := sess.Advance(pair.receiver, pair.pending)
+			if withReply {
+				if err != nil || next == nil {
+					b.Fatalf("receive did not yield a reply: got=%d, err=%v", got, err)
+				}
+				pair.pending = next
+			} else if got != 42 || next != nil || err != nil {
+				b.Fatalf("ready receive: got=%d, next=%p, err=%v", got, next, err)
+			}
+		}
+		b.StopTimer()
+		if !withReply {
+			continue
+		}
+		for i := range batch {
+			pair := &batch[i]
+			if got, next, err := sess.Advance(pair.receiver, pair.pending); got != 42 || next != nil || err != nil {
+				b.Fatalf("send reply: got=%d, next=%p, err=%v", got, next, err)
+			}
+			_, h := sess.Step(recv)
+			if got, next, err := sess.Advance(pair.sender, h); got != 42 || next != nil || err != nil {
+				b.Fatalf("receive reply: got=%d, next=%p, err=%v", got, next, err)
+			}
+		}
+	}
+}
+
+// BenchmarkChannelSendRetry measures a refused send on a full buffered channel.
+func BenchmarkChannelSendRetry(b *testing.B) {
+	ch := make(chan *int, 4)
+	value := 42
+	for range cap(ch) {
+		ch <- &value
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		select {
+		case ch <- &value:
+			b.Fatal("send on full channel succeeded")
+		default:
+		}
+	}
+}
+
 // BenchmarkSendRecv measures a single send/recv round-trip.
 func BenchmarkSendRecv(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		sender := sess.SendThen(42, sess.CloseDone(struct{}{}))
@@ -26,7 +242,6 @@ func BenchmarkSendRecv(b *testing.B) {
 
 // BenchmarkProtocol3Step measures a 3-step protocol (send, recv, close).
 func BenchmarkProtocol3Step(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := sess.SendThen(1,
@@ -43,7 +258,6 @@ func BenchmarkProtocol3Step(b *testing.B) {
 
 // BenchmarkSelectOffer measures select/offer branch round-trip.
 func BenchmarkSelectOffer(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		selector := sess.SelectLThen(sess.CloseDone(struct{}{}))
@@ -57,7 +271,6 @@ func BenchmarkSelectOffer(b *testing.B) {
 
 // BenchmarkExprSelectOffer measures Expr-world select/offer branch round-trip.
 func BenchmarkExprSelectOffer(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		selector := sess.ExprSelectLThen(sess.ExprCloseDone(struct{}{}))
@@ -71,7 +284,6 @@ func BenchmarkExprSelectOffer(b *testing.B) {
 
 // BenchmarkExprSendRecv measures Expr-world send/recv round-trip.
 func BenchmarkExprSendRecv(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		sender := sess.ExprSendThen(42, sess.ExprCloseDone(struct{}{}))
@@ -82,9 +294,64 @@ func BenchmarkExprSendRecv(b *testing.B) {
 	}
 }
 
+// BenchmarkExprSendRecvStructResult returns a four-counter summary from the sender.
+func BenchmarkExprSendRecvStructResult(b *testing.B) {
+	type counts struct{ Sent, Received, SentBytes, ReceivedBytes int64 }
+	sent := counts{Sent: 1, SentBytes: 8}
+	b.ReportAllocs()
+	for b.Loop() {
+		sender := sess.ExprSendThen(int64(42), sess.ExprCloseDone(sent))
+		receiver := sess.ExprRecvBind(sess.ExprCloseDone[int64])
+		result, value := sess.RunExpr(sender, receiver)
+		if result != sent || value != 42 {
+			b.Fatal(result, value)
+		}
+	}
+}
+
+// BenchmarkExprRecvBindStructResult returns a four-word summary from the receiving role.
+func BenchmarkExprRecvBindStructResult(b *testing.B) {
+	type summary struct{ count, sum, min, max int64 }
+	want := summary{1, 42, 42, 42}
+	b.ReportAllocs()
+	for b.Loop() {
+		sender := sess.ExprSendThen(int64(42), sess.ExprCloseDone(struct{}{}))
+		receiver := sess.ExprRecvBind(func(n int64) kont.Expr[summary] {
+			return sess.ExprCloseDone(summary{1, n, n, n})
+		})
+		if _, got := sess.RunExpr(sender, receiver); got != want {
+			b.Fatalf("received summary %v, want %v", got, want)
+		}
+	}
+}
+
+// BenchmarkExprRecvLoopStructResult reads a batch size and folds the messages into a 32-byte summary.
+func BenchmarkExprRecvLoopStructResult(b *testing.B) {
+	type summary struct{ remaining, count, sum, last int64 }
+	type decision = kont.Either[summary, summary]
+	read := func(s summary) kont.Expr[decision] {
+		if s.remaining == 0 {
+			return sess.ExprCloseDone(kont.Right[summary](s))
+		}
+		return sess.ExprRecvBind(func(n int64) kont.Expr[decision] {
+			next := summary{remaining: s.remaining - 1, count: s.count + 1, sum: s.sum + n, last: n}
+			return kont.ExprReturn(kont.Left[summary, summary](next))
+		})
+	}
+	start := func(size int64) kont.Expr[summary] { return sess.ExprLoop(summary{remaining: size}, read) }
+	want := summary{count: 2, sum: 15, last: 8}
+	b.ReportAllocs()
+	for b.Loop() {
+		sender := sess.ExprSendThen(int64(2),
+			sess.ExprSendThen(int64(7), sess.ExprSendThen(int64(8), sess.ExprCloseDone(struct{}{}))))
+		if _, got := sess.RunExpr(sender, sess.ExprRecvBind(start)); got != want {
+			b.Fatalf("received summary %v, want %v", got, want)
+		}
+	}
+}
+
 // BenchmarkExprProtocol3Step measures Expr-world 3-step protocol.
 func BenchmarkExprProtocol3Step(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := sess.ExprSendThen(1,
@@ -124,18 +391,13 @@ func BenchmarkDelegation(b *testing.B) {
 
 // BenchmarkRecLoop measures recursive session protocol via Loop.
 func BenchmarkRecLoop(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, struct{}]] {
 			if i >= 5 {
-				return kont.Bind(sess.CloseDone(struct{}{}), func(_ struct{}) kont.Eff[kont.Either[int, struct{}]] {
-					return kont.Pure(kont.Right[int, struct{}](struct{}{}))
-				})
+				return sess.CloseDone(kont.Right[int, struct{}](struct{}{}))
 			}
-			return kont.Bind(sess.SendThen(i, kont.Pure(struct{}{})), func(_ struct{}) kont.Eff[kont.Either[int, struct{}]] {
-				return kont.Pure(kont.Left[int, struct{}](i + 1))
-			})
+			return sess.SendThen(i, kont.Pure(kont.Left[int, struct{}](i+1)))
 		})
 		server := sess.RecvBind(func(_ int) kont.Eff[int] {
 			return sess.RecvBind(func(_ int) kont.Eff[int] {
@@ -148,13 +410,14 @@ func BenchmarkRecLoop(b *testing.B) {
 				})
 			})
 		})
-		sess.Run[struct{}, int](client, server)
+		if _, got := sess.Run(client, server); got != 4 {
+			b.Fatalf("receiver got %d, want 4", got)
+		}
 	}
 }
 
 // BenchmarkExprRecLoop measures Expr-world recursive session protocol via ExprLoop.
 func BenchmarkExprRecLoop(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := sess.ExprLoop(0, func(i int) kont.Expr[kont.Either[int, struct{}]] {
@@ -174,7 +437,9 @@ func BenchmarkExprRecLoop(b *testing.B) {
 				})
 			})
 		})
-		sess.RunExpr[struct{}, int](client, server)
+		if _, got := sess.RunExpr(client, server); got != 4 {
+			b.Fatalf("receiver got %d, want 4", got)
+		}
 	}
 }
 
@@ -198,7 +463,6 @@ func BenchmarkExec(b *testing.B) {
 
 // BenchmarkErrorPath measures RunError with error handler dispatch.
 func BenchmarkErrorPath(b *testing.B) {
-	skipRace(b)
 	b.ReportAllocs()
 	for b.Loop() {
 		client := kont.Bind(
@@ -219,10 +483,19 @@ func BenchmarkErrorPath(b *testing.B) {
 	}
 }
 
-// BenchmarkStepAdvance measures stepping a protocol via Step+Advance.
+// BenchmarkStepAdvance measures a concurrent handoff with a polling receiver.
 func BenchmarkStepAdvance(b *testing.B) {
+	benchmarkStepAdvance(b, false)
+}
+
+func BenchmarkStepAdvancePeerWake(b *testing.B) {
+	benchmarkStepAdvance(b, true)
+}
+
+func benchmarkStepAdvance(b *testing.B, waitForPeer bool) {
 	skipRace(b)
 	b.ReportAllocs()
+	var refusals uint64
 	for b.Loop() {
 		epA, epB := sess.New()
 		sender := sess.ExprSendThen(42, sess.ExprCloseDone(struct{}{}))
@@ -232,23 +505,29 @@ func BenchmarkStepAdvance(b *testing.B) {
 
 		done := make(chan struct{})
 		go func() {
-			result, susp := sess.Step[struct{}](sender)
-			_ = result
-			for susp != nil {
-				result, susp, _ = sess.Advance(epA, susp)
-			}
+			execExpr(epA, sender)
 			close(done)
 		}()
 
-		result, susp := sess.Step[int](receiver)
-		for susp != nil {
+		got, pending := sess.Step(receiver)
+		for pending != nil {
 			var err error
-			result, susp, err = sess.Advance(epB, susp)
+			got, pending, err = sess.Advance(epB, pending)
 			if err != nil {
-				continue
+				if !iox.IsWouldBlock(err) {
+					b.Fatal(err)
+				}
+				refusals++
+				if waitForPeer {
+					// This one-way sender can finish while its peer is waiting.
+					<-done
+				}
 			}
 		}
 		<-done
-		_ = result
+		if got != 42 {
+			b.Fatalf("receiver got %d, want 42", got)
+		}
 	}
+	b.ReportMetric(float64(refusals)/float64(b.N), "refusals/op")
 }

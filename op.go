@@ -10,6 +10,12 @@ import (
 
 // Send is the effect operation for sending a value of type T.
 // Perform(Send[T]{Value: v}) sends v to the peer endpoint.
+// A sent slice shares its backing array with the receiver.
+//
+// Send[any]{Value: v} converts v to any at construction, so retries of the
+// same suspension reuse that value. The pending operation is then Send[any].
+// The payload keeps its dynamic type for [Recv].
+//
 // For interface-typed T, v must carry a concrete dynamic type.
 // Nil interface payloads such as any(nil) are out of contract.
 type Send[T any] struct {
@@ -20,15 +26,15 @@ type Send[T any] struct {
 // DispatchSession handles Send on the session transport.
 // Non-blocking: returns iox.ErrWouldBlock if the bounded SPSC queue is full.
 func (s Send[T]) DispatchSession(ctx *sessionContext) (kont.Resumed, error) {
-	ctx.sendSlot = s.Value
-	if err := ctx.sendQ.Enqueue(&ctx.sendSlot); err != nil {
+	value := any(s.Value)
+	if err := ctx.sendQ.Enqueue(&value); err != nil {
 		return nil, err
 	}
 	return struct{}{}, nil
 }
 
-// Recv is the effect operation for receiving a value of type T.
-// Perform(Recv[T]{}) receives a typed value from the peer.
+// Recv receives the next payload as T. For the queued value v, the type
+// assertion v.(T) must succeed.
 type Recv[T any] struct {
 	kont.Phantom[T]
 }
@@ -40,7 +46,8 @@ func (Recv[T]) DispatchSession(ctx *sessionContext) (kont.Resumed, error) {
 	if err != nil {
 		return nil, err
 	}
-	return v.(T), nil
+	_ = v.(T) // Check the receive type and reuse the queued interface value.
+	return v, nil
 }
 
 // Close is the effect operation for closing the session.

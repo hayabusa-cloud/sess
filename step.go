@@ -8,8 +8,9 @@ import (
 	"code.hybscloud.com/kont"
 )
 
-// Step evaluates a session protocol until the first effect suspension.
-// Returns (result, nil) on completion, or (zero, suspension) if pending.
+// Step evaluates an Expr role to its first return or operation. It returns
+// (result, nil) on completion or (zero, suspension) while pending.
+// For a Cont role, [kont.Step] returns the same suspension type for [Advance].
 func Step[R any](protocol kont.Expr[R]) (R, *kont.Suspension[R]) {
 	return kont.StepExpr(protocol)
 }
@@ -21,7 +22,8 @@ func Step[R any](protocol kont.Expr[R]) (R, *kont.Suspension[R]) {
 // On success (nil error), the suspension is consumed and the protocol
 // advances to the next effect or completion.
 // On iox.ErrWouldBlock, the suspension is unconsumed and may be retried
-// after the peer makes progress.
+// after the peer makes progress. Give the live suspension one owner and
+// serialize attempts with discard. A queue action takes effect before Resume.
 func Advance[R any](ep *Endpoint, susp *kont.Suspension[R]) (R, *kont.Suspension[R], error) {
 	sop, ok := susp.Op().(sessionDispatcher)
 	if !ok {

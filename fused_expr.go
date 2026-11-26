@@ -22,26 +22,35 @@ var (
 // Named function produces a static function value, consistent with kont convention.
 func identityResume(v kont.Erased) kont.Erased { return v }
 
-// ExprSendThen sends a value and then continues with next.
+// effectThen sequences op before next, discarding op's reply.
+func effectThen[A any](op kont.Operation, next *kont.Expr[A]) *kont.EffectFrame[kont.Erased] {
+	ef := kont.AcquireEffectFrame()
+	ef.Operation = op
+	ef.Resume = identityResume
+	if frameIgnoresInput(next.Frame) {
+		ef.Next = next.Frame
+		return ef
+	}
+	tf := kont.AcquireThenFrame()
+	tf.Second = kont.Expr[kont.Erased]{Value: next.Value, Frame: next.Frame}
+	tf.Next = exprReturnFrame
+	ef.Next = tf
+	return ef
+}
+
+// ExprSendThen builds a single-use expression that sends v and continues with next.
 // Fuses ExprPerform(Send[T]{Value: v}) + ExprThen.
 func ExprSendThen[T, B any](v T, next kont.Expr[B]) kont.Expr[B] {
-	tf := kont.AcquireThenFrame()
-	tf.Second = kont.Expr[kont.Erased]{Value: kont.Erased(next.Value), Frame: next.Frame}
-	tf.Next = exprReturnFrame
-	ef := kont.AcquireEffectFrame()
-	ef.Operation = Send[T]{Value: v}
-	ef.Resume = identityResume
-	ef.Next = tf
-	return kont.ExprSuspend[B](ef)
+	return kont.ExprSuspend[B](effectThen(Send[T]{Value: v}, &next))
 }
 
 func recvBindUnwind[T, B any](data, _, _ kont.Erased, current kont.Erased) (kont.Erased, kont.Frame) {
 	f := data.(func(T) kont.Expr[B])
 	result := f(current.(T))
-	return kont.Erased(result.Value), result.Frame
+	return frameInput(&result), result.Frame
 }
 
-// ExprRecvBind receives a value and passes it to f.
+// ExprRecvBind builds a single-use expression that receives a value and passes it to f.
 // Fuses ExprPerform(Recv[T]{}) + ExprBind.
 func ExprRecvBind[T, B any](f func(T) kont.Expr[B]) kont.Expr[B] {
 	bf := kont.AcquireUnwindFrame()
@@ -54,7 +63,7 @@ func ExprRecvBind[T, B any](f func(T) kont.Expr[B]) kont.Expr[B] {
 	return kont.ExprSuspend[B](ef)
 }
 
-// ExprCloseDone closes the session and returns a.
+// ExprCloseDone builds a single-use expression that closes the session and returns a.
 // Fuses ExprPerform(Close{}) + ExprThen + ExprReturn.
 func ExprCloseDone[A any](a A) kont.Expr[A] {
 	tf := kont.AcquireThenFrame()
@@ -67,30 +76,16 @@ func ExprCloseDone[A any](a A) kont.Expr[A] {
 	return kont.ExprSuspend[A](ef)
 }
 
-// ExprSelectLThen selects the left branch and continues with next.
+// ExprSelectLThen builds a single-use expression that selects the left branch and continues with next.
 // Fuses ExprPerform(SelectL{}) + ExprThen.
 func ExprSelectLThen[B any](next kont.Expr[B]) kont.Expr[B] {
-	tf := kont.AcquireThenFrame()
-	tf.Second = kont.Expr[kont.Erased]{Value: kont.Erased(next.Value), Frame: next.Frame}
-	tf.Next = exprReturnFrame
-	ef := kont.AcquireEffectFrame()
-	ef.Operation = exprSelectL
-	ef.Resume = identityResume
-	ef.Next = tf
-	return kont.ExprSuspend[B](ef)
+	return kont.ExprSuspend[B](effectThen(exprSelectL, &next))
 }
 
-// ExprSelectRThen selects the right branch and continues with next.
+// ExprSelectRThen builds a single-use expression that selects the right branch and continues with next.
 // Fuses ExprPerform(SelectR{}) + ExprThen.
 func ExprSelectRThen[B any](next kont.Expr[B]) kont.Expr[B] {
-	tf := kont.AcquireThenFrame()
-	tf.Second = kont.Expr[kont.Erased]{Value: kont.Erased(next.Value), Frame: next.Frame}
-	tf.Next = exprReturnFrame
-	ef := kont.AcquireEffectFrame()
-	ef.Operation = exprSelectR
-	ef.Resume = identityResume
-	ef.Next = tf
-	return kont.ExprSuspend[B](ef)
+	return kont.ExprSuspend[B](effectThen(exprSelectR, &next))
 }
 
 func offerBranchUnwind[A any](data, data2, _ kont.Erased, current kont.Erased) (kont.Erased, kont.Frame) {
@@ -103,10 +98,10 @@ func offerBranchUnwind[A any](data, data2, _ kont.Erased, current kont.Erased) (
 	} else {
 		result = onRight()
 	}
-	return kont.Erased(result.Value), result.Frame
+	return frameInput(&result), result.Frame
 }
 
-// ExprOfferBranch waits for the peer's choice and calls onLeft or onRight.
+// ExprOfferBranch builds a single-use expression that calls onLeft or onRight on the peer's choice.
 // Fuses ExprPerform(Offer{}) + ExprBind + Either branch.
 func ExprOfferBranch[A any](onLeft func() kont.Expr[A], onRight func() kont.Expr[A]) kont.Expr[A] {
 	bf := kont.AcquireUnwindFrame()

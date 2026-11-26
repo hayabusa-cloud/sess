@@ -6,107 +6,88 @@ package sess
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"code.hybscloud.com/iox"
 	"code.hybscloud.com/kont"
 )
 
-type failingSessionDispatcher struct {
-	err   error
-	calls int
+// delayedSend returns firstErr once. A retry runs the real send.
+type delayedSend struct {
+	Send[int]
+	firstErr error
+	calls    int
 }
 
-func (d *failingSessionDispatcher) DispatchSession(*sessionContext) (kont.Resumed, error) {
-	d.calls++
-	return nil, d.err
+func (s *delayedSend) DispatchSession(ctx *sessionContext) (kont.Resumed, error) {
+	s.calls++
+	if s.calls == 1 {
+		return nil, s.firstErr
+	}
+	return s.Send.DispatchSession(ctx)
 }
 
-type failingExprSessionOp struct {
-	kont.Phantom[int]
-	err   error
-	calls *int
-}
-
-func (op failingExprSessionOp) DispatchSession(*sessionContext) (kont.Resumed, error) {
-	*op.calls++
-	return nil, op.err
-}
-
-func TestDispatchWaitPanicsOnUnexpectedError(t *testing.T) {
-	d := &failingSessionDispatcher{err: errors.New("boom")}
-
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for unexpected session dispatcher error")
+func TestPairedRunnersRetryAfterBothRolesWait(t *testing.T) {
+	blocked := fmt.Errorf("delayed send: %w", iox.ErrWouldBlock)
+	t.Run("RunExpr", func(t *testing.T) {
+		send := &delayedSend{Send: Send[int]{Value: 42}, firstErr: blocked}
+		_, got := RunExpr(kont.ExprPerform(send), kont.ExprPerform(Recv[int]{}))
+		if got != 42 || send.calls != 2 {
+			t.Fatalf("received %d after %d send attempts, want 42 after 2", got, send.calls)
 		}
-		msg, ok := r.(string)
-		if !ok || msg != "sess: dispatch returned unexpected error: boom" {
-			t.Fatalf("unexpected panic: %v", r)
+	})
+	t.Run("RunErrorExpr", func(t *testing.T) {
+		send := &delayedSend{Send: Send[int]{Value: 42}, firstErr: blocked}
+		sent, received, thrown := RunErrorExpr[string](kont.ExprPerform(send), kont.ExprPerform(Recv[int]{}))
+		if got, ok := received.GetRight(); thrown != nil || !sent.IsRight() || !ok || got != 42 {
+			t.Fatalf("sent=%v received=%v thrown=%v", sent, received, thrown)
 		}
-		if d.calls != 1 {
-			t.Fatalf("dispatch calls = %d, want 1", d.calls)
+		if send.calls != 2 {
+			t.Fatalf("send attempts = %d, want 2", send.calls)
 		}
-	}()
-
-	dispatchWait(&sessionContext{}, d)
+	})
 }
 
-func TestRunExprPanicsOnUnexpectedDispatchError(t *testing.T) {
+func TestRunnersRejectUnexpectedDispatchError(t *testing.T) {
 	for _, tt := range []struct {
 		name string
-		run  func(failingExprSessionOp)
+		run  func(*delayedSend)
 	}{
-		{
-			name: "side A",
-			run: func(op failingExprSessionOp) {
-				RunExpr[int, struct{}](kont.ExprPerform(op), ExprCloseDone(struct{}{}))
-			},
-		},
-		{
-			name: "side B",
-			run: func(op failingExprSessionOp) {
-				RunExpr[struct{}, int](ExprCloseDone(struct{}{}), kont.ExprPerform(op))
-			},
-		},
+		{"ExecExpr", func(op *delayedSend) {
+			ep, _ := New()
+			ExecExpr(ep, kont.ExprPerform(op))
+		}},
+		{"ExecErrorExpr", func(op *delayedSend) {
+			ep, _ := New()
+			ExecErrorExpr[string](ep, kont.ExprPerform(op))
+		}},
+		{"RunExpr/left", func(op *delayedSend) {
+			RunExpr(kont.ExprPerform(op), ExprCloseDone(struct{}{}))
+		}},
+		{"RunExpr/right", func(op *delayedSend) {
+			RunExpr(ExprCloseDone(struct{}{}), kont.ExprPerform(op))
+		}},
+		{"RunErrorExpr/left", func(op *delayedSend) {
+			RunErrorExpr[string](kont.ExprPerform(op), ExprCloseDone(struct{}{}))
+		}},
+		{"RunErrorExpr/right", func(op *delayedSend) {
+			RunErrorExpr[string](ExprCloseDone(struct{}{}), kont.ExprPerform(op))
+		}},
 	} {
-		t.Run(tt.name, func(t *testing.T) {
-			calls := 0
-			defer func() {
-				r := recover()
-				if r == nil {
-					t.Fatal("expected panic for unexpected RunExpr dispatcher error")
-				}
-				msg, ok := r.(string)
-				if !ok || msg != "sess: dispatch returned unexpected error: io: expect more" {
-					t.Fatalf("unexpected panic: %v", r)
-				}
-				if calls != 1 {
-					t.Fatalf("dispatch calls = %d, want 1", calls)
-				}
-			}()
-			tt.run(failingExprSessionOp{err: iox.ErrMore, calls: &calls})
-		})
+		for _, err := range []error{iox.ErrMore, errors.New("boom")} {
+			t.Run(tt.name+"/"+err.Error(), func(t *testing.T) {
+				op := &delayedSend{firstErr: err}
+				defer func() {
+					if got, want := recover(), "sess: dispatch returned unexpected error: "+err.Error(); got != want {
+						t.Errorf("panic = %v, want %q", got, want)
+					}
+					if op.calls != 1 {
+						t.Errorf("dispatch calls = %d, want 1", op.calls)
+					}
+				}()
+				tt.run(op)
+			})
+		}
 	}
-}
-
-func TestDispatchWaitPanicsOnErrMore(t *testing.T) {
-	d := &failingSessionDispatcher{err: iox.ErrMore}
-
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for ErrMore in session dispatcher")
-		}
-		msg, ok := r.(string)
-		if !ok || msg != "sess: dispatch returned unexpected error: io: expect more" {
-			t.Fatalf("unexpected panic: %v", r)
-		}
-		if d.calls != 1 {
-			t.Fatalf("dispatch calls = %d, want 1", d.calls)
-		}
-	}()
-
-	dispatchWait(&sessionContext{}, d)
 }

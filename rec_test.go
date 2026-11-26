@@ -13,7 +13,6 @@ import (
 )
 
 func TestLoopCounter(t *testing.T) {
-	skipRace(t)
 	// Counter protocol: send 0..4 via SelectR, then SelectL to close
 	server := sess.Loop(0, func(acc int) kont.Eff[kont.Either[int, int]] {
 		return sess.OfferBranch(
@@ -51,7 +50,6 @@ func TestLoopCounter(t *testing.T) {
 }
 
 func TestLoopPingPong(t *testing.T) {
-	skipRace(t)
 	// Ping-pong: client sends int, server echoes doubled, accumulate until >= 100
 	// Client signals close (SelectL) when done, continue (SelectR) otherwise
 	server := sess.Loop(struct{}{}, func(_ struct{}) kont.Eff[kont.Either[struct{}, string]] {
@@ -95,7 +93,6 @@ func TestLoopPingPong(t *testing.T) {
 }
 
 func TestLoopImmediateTermination(t *testing.T) {
-	skipRace(t)
 	// Loop that terminates immediately (Right on first step)
 	client := sess.Loop(0, func(_ int) kont.Eff[kont.Either[int, string]] {
 		return sess.CloseDone(kont.Right[int, string]("immediate"))
@@ -113,7 +110,6 @@ func TestLoopImmediateTermination(t *testing.T) {
 }
 
 func TestLoopDeepPureStackSafe(t *testing.T) {
-	skipRace(t)
 	const depth = 5000000
 	protocol := sess.Loop(depth, func(i int) kont.Eff[kont.Either[int, int]] {
 		if i == 0 {
@@ -131,7 +127,6 @@ func TestLoopDeepPureStackSafe(t *testing.T) {
 }
 
 func TestExprLoopCounter(t *testing.T) {
-	skipRace(t)
 	// Expr-world counter: send 0..4 via SelectR, then SelectL to close
 	client := sess.ExprLoop(0, func(i int) kont.Expr[kont.Either[int, string]] {
 		if i >= 5 {
@@ -167,7 +162,6 @@ func TestExprLoopCounter(t *testing.T) {
 }
 
 func TestExprLoopImmediateTermination(t *testing.T) {
-	skipRace(t)
 	client := sess.ExprLoop(0, func(_ int) kont.Expr[kont.Either[int, string]] {
 		return sess.ExprCloseDone(kont.Right[int, string]("immediate"))
 	})
@@ -196,6 +190,59 @@ func TestExprLoopPureStep(t *testing.T) {
 	}
 }
 
+func TestExprLoopPreservesStepInput(t *testing.T) {
+	type choice = kont.Either[int, int]
+	frame := &kont.MapFrame[any, any]{
+		F: func(v any) any {
+			n, _ := v.(choice).GetLeft()
+			return kont.Left[int, int](n + 1)
+		},
+		Next: kont.ReturnFrame{},
+	}
+	m := sess.ExprLoop(40, func(n int) kont.Expr[choice] {
+		if n == 40 || n == 41 {
+			return kont.Expr[choice]{Value: kont.Left[int, int](n), Frame: frame}
+		}
+		return kont.ExprReturn(kont.Right[int](n))
+	})
+	if n := kont.RunPure(m); n != 42 {
+		t.Fatalf("got %d, want 42", n)
+	}
+}
+
+func TestLoopNilResult(t *testing.T) {
+	type choice = kont.Either[int, error]
+	done := kont.Right[int, error](nil)
+	cps := sess.Loop(0, func(int) kont.Eff[choice] { return kont.Pure(done) })
+	if err, pending := kont.Step(cps); err != nil || pending != nil {
+		t.Fatalf("Loop returned (%v, %v), want (nil, nil)", err, pending)
+	}
+	pure := sess.ExprLoop(0, func(int) kont.Expr[choice] { return kont.ExprReturn(done) })
+	if err := kont.RunPure(pure); err != nil {
+		t.Fatalf("pure loop returned %v", err)
+	}
+	ep, _ := sess.New()
+	withClose := sess.ExprLoop(0, func(int) kont.Expr[choice] { return sess.ExprCloseDone(done) })
+	if err := sess.ExecExpr(ep, withClose); err != nil {
+		t.Fatalf("loop returned %v after Close", err)
+	}
+}
+
+func TestExprLoopZeroStepContinues(t *testing.T) {
+	type choice = kont.Either[int, string]
+	// A bare nil returned by this frame is the zero choice, Left(0).
+	frame := &kont.MapFrame[any, any]{F: func(any) any { return nil }, Next: kont.ReturnFrame{}}
+	m := sess.ExprLoop(1, func(n int) kont.Expr[choice] {
+		if n == 0 {
+			return kont.ExprReturn(kont.Right[int]("done"))
+		}
+		return kont.Expr[choice]{Frame: frame}
+	})
+	if got := kont.RunPure(m); got != "done" {
+		t.Fatalf("got %q, want done", got)
+	}
+}
+
 func TestExprLoopDeepPureStackSafe(t *testing.T) {
 	const depth = 5000000
 	result := kont.RunPure(sess.ExprLoop(depth, func(i int) kont.Expr[kont.Either[int, int]] {
@@ -210,7 +257,6 @@ func TestExprLoopDeepPureStackSafe(t *testing.T) {
 }
 
 func TestLoopUltraDeepMixedEffectPureStackSafe(t *testing.T) {
-	skipRace(t)
 	const depth = 5000000
 	const stride = 4096
 
@@ -270,7 +316,6 @@ func TestLoopUltraDeepMixedEffectPureStackSafe(t *testing.T) {
 }
 
 func TestExprLoopUltraDeepMixedEffectPureStackSafe(t *testing.T) {
-	skipRace(t)
 	const depth = 5000000
 	const stride = 4096
 
@@ -330,7 +375,6 @@ func TestExprLoopUltraDeepMixedEffectPureStackSafe(t *testing.T) {
 }
 
 func TestExprLoopPureTermination(t *testing.T) {
-	skipRace(t)
 	// Mixed: effects in early iterations, pure Right on termination
 	client := sess.ExprLoop(0, func(i int) kont.Expr[kont.Either[int, string]] {
 		if i >= 2 {

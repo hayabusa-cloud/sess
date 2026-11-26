@@ -13,7 +13,6 @@ import (
 )
 
 func TestExprSendRecv(t *testing.T) {
-	skipRace(t)
 	// !int.?string.end ↔ ?int.!string.end
 	client := sess.ExprSendThen(42,
 		sess.ExprRecvBind(func(s string) kont.Expr[string] {
@@ -36,8 +35,53 @@ func TestExprSendRecv(t *testing.T) {
 	}
 }
 
+func TestExprSendThenPreservesNextInput(t *testing.T) {
+	addOne := kont.MapFrame[int, int]{F: func(n int) int { return n + 1 }, Next: kont.ReturnFrame{}}
+	next := kont.Expr[int]{Value: 41, Frame: addOne.AsFrame()}
+	result, received := sess.RunExpr(sess.ExprSendThen(7, next), kont.ExprPerform(sess.Recv[int]{}))
+	if result != 42 || received != 7 {
+		t.Fatalf("RunExpr returned (%d, %d), want (42, 7)", result, received)
+	}
+}
+
+func TestExprSendRecvEnterThenFrame(t *testing.T) {
+	addOne := kont.MapFrame[int, int]{F: func(n int) int { return n + 1 }, Next: kont.ReturnFrame{}}
+	next := func(n int) kont.Expr[int] {
+		return kont.Expr[int]{Value: -1, Frame: &kont.ThenFrame[any, any]{
+			Second: kont.ExprReturn[any](n),
+			Next:   addOne.AsFrame(),
+		}}
+	}
+	sent, received := sess.RunExpr(sess.ExprSendThen(7, next(41)), sess.ExprRecvBind(next))
+	if sent != 42 || received != 8 {
+		t.Fatalf("RunExpr returned (%d, %d), want (42, 8)", sent, received)
+	}
+}
+
+func TestExprCallbacksPreserveNextInput(t *testing.T) {
+	addOne := kont.MapFrame[int, int]{F: func(n int) int { return n + 1 }, Next: kont.ReturnFrame{}}
+	from := func(n int) kont.Expr[int] { return kont.Expr[int]{Value: n, Frame: addOne.AsFrame()} }
+	receive := func(n int) kont.Expr[int] { return from(n + 1) }
+	left := func() kont.Expr[int] { return from(10) }
+	right := func() kont.Expr[int] { return from(20) }
+
+	for _, tc := range []struct {
+		name string
+		peer kont.Expr[struct{}]
+		role kont.Expr[int]
+		want int
+	}{
+		{"receive", kont.ExprPerform(sess.Send[int]{Value: 40}), sess.ExprRecvBind(receive), 42},
+		{"offer left", kont.ExprPerform(sess.SelectL{}), sess.ExprOfferBranch(left, right), 11},
+		{"offer right", kont.ExprPerform(sess.SelectR{}), sess.ExprOfferBranch(left, right), 21},
+	} {
+		if _, got := sess.RunExpr(tc.peer, tc.role); got != tc.want {
+			t.Errorf("%s returned %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestExprSendRecvMultiple(t *testing.T) {
-	skipRace(t)
 	// !int.!int.?int.end ↔ ?int.?int.!int.end
 	client := sess.ExprSendThen(10,
 		sess.ExprSendThen(20,
@@ -63,7 +107,6 @@ func TestExprSendRecvMultiple(t *testing.T) {
 }
 
 func TestExprSelectOfferLeft(t *testing.T) {
-	skipRace(t)
 	// SelectL.!int.end ↔ Offer.?int.end
 	client := sess.ExprSelectLThen(
 		sess.ExprSendThen(99, sess.ExprCloseDone("left")),
@@ -90,7 +133,6 @@ func TestExprSelectOfferLeft(t *testing.T) {
 }
 
 func TestExprSelectOfferRight(t *testing.T) {
-	skipRace(t)
 	// SelectR.!string.end ↔ Offer.?string.end
 	client := sess.ExprSelectRThen(
 		sess.ExprSendThen("hello", sess.ExprCloseDone("right")),
@@ -117,7 +159,6 @@ func TestExprSelectOfferRight(t *testing.T) {
 }
 
 func TestExprCloseOnly(t *testing.T) {
-	skipRace(t)
 	// end ↔ end
 	a := sess.ExprCloseDone("a")
 	b := sess.ExprCloseDone("b")
@@ -132,7 +173,6 @@ func TestExprCloseOnly(t *testing.T) {
 }
 
 func TestExprFusedProtocol(t *testing.T) {
-	skipRace(t)
 	// Full protocol using only Expr fused API
 	client := sess.ExprSendThen(100,
 		sess.ExprSendThen("hello",
@@ -160,7 +200,6 @@ func TestExprFusedProtocol(t *testing.T) {
 }
 
 func TestExprSelectOfferReverse(t *testing.T) {
-	skipRace(t)
 	// Server selects, client offers — exercises epB.signal and epA.await
 	server := sess.ExprSelectLThen(
 		sess.ExprSendThen(77, sess.ExprCloseDone("selected")),
@@ -187,7 +226,6 @@ func TestExprSelectOfferReverse(t *testing.T) {
 }
 
 func TestExprBidirectional(t *testing.T) {
-	skipRace(t)
 	// !int.?string.!bool.end ↔ ?int.!string.?bool.end
 	client := sess.ExprSendThen(7,
 		sess.ExprRecvBind(func(s string) kont.Expr[string] {

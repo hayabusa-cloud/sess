@@ -1,5 +1,5 @@
 [![Go Reference](https://pkg.go.dev/badge/code.hybscloud.com/sess.svg)](https://pkg.go.dev/code.hybscloud.com/sess)
-[![Go Report Card](https://goreportcard.com/badge/github.com/hayabusa-cloud/sess)](https://goreportcard.com/report/github.com/hayabusa-cloud/sess)
+[![Benchmarks](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml)
 [![Coverage Status](https://codecov.io/gh/hayabusa-cloud/sess/graph/badge.svg)](https://codecov.io/gh/hayabusa-cloud/sess)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -7,19 +7,26 @@
 
 # sess
 
-Session-typed communication protocols via algebraic effects on [kont](https://code.hybscloud.com/kont).
+Two peers need to agree on the types and order of their messages. In `sess`, the **Cont** and **Expr** worlds give you two equivalent ways to write each role’s protocol in Go.
 
 ## Overview
 
-Session types assign a type to each step of a communication protocol. Each operation — send, receive, select, offer, close — is individually well-typed via Go generics, and protocol composition within a single endpoint is type-safe. Duality (matching operations across endpoints) is a programmer responsibility: the programmer writes dual protocols, and mismatches manifest at runtime as type assertion failures or deadlocks.
+`sess` represents each protocol action as an algebraic effect on [kont](https://code.hybscloud.com/kont). A role can send or receive a value, choose or follow a branch, and close its endpoint.
 
-`sess` encodes session types as algebraic effects evaluated by the [kont](https://code.hybscloud.com/kont) effect system. Each protocol step — send, receive, select, offer, close — is an effect that suspends the computation until the transport completes the operation. The transport returns `iox.ErrWouldBlock` at computational boundaries, allowing proactor event loops (e.g., `io_uring`) to multiplex execution without thread-blocking.
+Use **Cont** (`kont.Eff[A]`) to compose a role with Go functions. `RecvBind` passes the received value to a function that returns the rest of the role’s protocol. `Run` drives both roles. Use `Exec` for one endpoint while its peer runs separately.
 
-Two equivalent API families are available: Cont (closure-based, straightforward to compose) and Expr (frame-based, amortized zero-allocation for hot paths).
+Use **Expr** (`kont.Expr[A]`) to represent the remaining work as explicit continuation frames. A driver such as an `io_uring` event loop can call `kont.Step(cont)` or `sess.Step(expr)`. Both return a result or a suspension. For a pending session operation, pass its suspension to `sess.Advance`. If a receive returns `iox.ErrWouldBlock`, keep the same suspension and retry after the peer sends.
+
+In both versions, the role receives an `int`, performs a local `Close`, and returns the value. Pair it with a sender using `Run` for Cont or `RunExpr` for Expr.
+
+```go
+contReceiver := sess.RecvBind(sess.CloseDone[int])
+exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
+```
 
 ## Composition Boundary
 
-`sess` owns the session effect signature and the endpoint transport that interprets it. It uses `iox.ErrWouldBlock` as the non-blocking boundary for bounded queues, but does not own the full `iox` outcome algebra; `takt` owns proactor-style scheduling and completion correlation; `cove` owns contextual evidence for suspension-aware composition. Within `sess`, `iox.ErrMore` remains outside the endpoint transport domain and is treated as an unexpected dispatcher failure.
+The endpoints exchange payloads and branch choices through bounded queues. Enqueuing into a full queue or dequeuing from an empty one returns `iox.ErrWouldBlock`. A driver can use `takt` to match backend completions, `tempo` to track event history, and `cove` to check the current context before each attempt. The endpoint transport treats `iox.ErrMore` as a dispatcher error.
 
 ## Installation
 
@@ -27,25 +34,25 @@ Two equivalent API families are available: Cont (closure-based, straightforward 
 go get code.hybscloud.com/sess
 ```
 
-Requires Go 1.26+.
+Requires Go 1.27+.
 
 ## Session Operations
 
-Each operation has a dual. When one endpoint performs an operation, the other must perform its dual.
+Go checks each operation’s payload and reply types. Pair each send with a `Recv[T]` so that the type assertion `v.(T)` succeeds for every payload `v` at that step. For example, `Recv[[]byte]` can receive a `[]byte` sent with `Send[any]`. Pair each branch selection with an `Offer`. Payloads and branch choices travel in separate queues, so a run can finish even when the roles disagree on action order.
 
-| Operation | Dual | Suspends? |
+| Operation | Dual | Transport backpressure |
 |-----------|------|-----------|
 | `Send[T]` — send a value | `Recv[T]` — receive a value | `iox.ErrWouldBlock` |
 | `SelectL` / `SelectR` — choose a branch | `Offer` — follow the peer's choice | `iox.ErrWouldBlock` |
-| `Close` — end the session | `Close` | Never |
+| `Close` — signal local close | `Close` | Never |
 
 ## Usage
 
-Use `Run` to prototype and validate protocols. Use `Exec` with externally managed endpoints. Use the Expr API (`RunExpr`/`ExecExpr`) when you need stepping control or want to minimize allocation overhead on hot paths.
+Use `Run` to drive both roles on one goroutine, `Exec` for one externally managed endpoint, and `Step` with `Advance` when a driver chooses when to retry.
 
 ### Send and Receive
 
-One side sends a value; the dual side receives it.
+A successful send enqueues the payload. If the sender needs to know that the peer processed it, have the peer send an acknowledgment after processing.
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
@@ -89,34 +96,37 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 
 ### Delegation
 
-Transfer an endpoint to a third party by sending it; accept delegation by receiving it.
+A successful send puts the endpoint in transit until the receiver dequeues it. If the send returns `iox.ErrWouldBlock`, the sender keeps ownership.
 
 ```go
-delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
-acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
-	return sess.CloseDone("accepted")
-})
+endpoint, peer := sess.New()
+delegator := sess.SendThen(endpoint, sess.CloseDone(struct{}{}))
+acceptor := sess.RecvBind(sess.CloseDone[*sess.Endpoint])
+_, received := sess.Run(delegator, acceptor)
+
+sess.Exec(received, sess.SendThen("hello", sess.CloseDone(struct{}{})))
+message := sess.Exec(peer, sess.RecvBind(sess.CloseDone[string]))
+fmt.Println(message) // hello
 ```
 
 ### Stepping
 
-For proactor event loops (e.g., `io_uring`), `Step` and `Advance` evaluate one effect at a time. Unlike `Run` and `Exec` — which synchronously wait for progress — the stepping API yields `iox.ErrWouldBlock` to the caller, letting the event loop reschedule.
+`Step` exposes the pending receive. `Advance` returns the same suspension while the queue is empty. After the peer sends, retrying that suspension obtains the value.
 
 ```go
-ep, _ := sess.New()
-protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
-_, susp := sess.Step[struct{}](protocol)
-// In a proactor event loop (e.g., io_uring), yield on boundary:
-_, nextSusp, err := sess.Advance(ep, susp)
-if err != nil {
-	return susp // yield to event loop, reschedule when ready
-}
-susp = nextSusp
+sender, receiver := sess.New()
+_, h := sess.Step(kont.ExprPerform(sess.Recv[int]{}))
+_, pending, err := sess.Advance(receiver, h)
+fmt.Println(iox.IsWouldBlock(err), pending == h) // true true
+
+sess.ExecExpr(sender, kont.ExprPerform(sess.Send[int]{Value: 42}))
+value, next, err := sess.Advance(receiver, pending)
+fmt.Println(value, next == nil, err) // 42 true <nil>
 ```
 
 ### Error Handling
 
-Compose session protocols with error effects. `Throw` immediately aborts the paired run. The returned `thrown` value is the session-global uncaught throw cause; check it before interpreting a peer-side `Either`.
+An error-aware paired run ends when it dispatches a matching uncaught `Throw`. Check the returned `thrown` before interpreting the peer’s `Either`.
 
 ```go
 client := kont.ExprThrowError[string, string]("boom")
@@ -151,13 +161,15 @@ In brief:
 | `Exec` / `ExecExpr` | Run one side on a pre-created endpoint |
 | `Step` + `Advance` | Evaluate one effect at a time for external event loops |
 
-**Cont vs Expr**: Cont is closure-based and straightforward to compose. Expr is frame-based with amortized zero-allocation, suited for hot paths.
+Compare allocation counts for complete protocols and for retrying a full queue. [Benchmark guide](BENCHMARKS.md)
 
 ## Contract
 
 `sess` exposes a trusted-caller transport API. Each endpoint is intended for use by one goroutine at a time, and the hot path intentionally omits concurrent-use guards and post-`Close` checks.
 
 If a payload type is an interface, the value must still carry a concrete dynamic type. Nil interface values such as `any(nil)` or `error(nil)` are outside the contract; if nil is semantically meaningful, use a nil value of a concrete type or wrap it explicitly.
+
+Fused constructors such as `ExprSendThen` build single-use expressions. Build the role again for each run.
 
 ## API
 
@@ -167,39 +179,36 @@ If a payload type is an interface, the value must still carry a concrete dynamic
 | Recursion | `Loop` | `ExprLoop` |
 | Execution | `Exec`, `Run` | `ExecExpr`, `RunExpr` |
 | Error execution | `ExecError`, `RunError` | `ExecErrorExpr`, `RunErrorExpr` |
-| Stepping | | `Step`, `Advance`, `StepError`, `AdvanceError` |
+| Stepping | `kont.Step`, `Advance` | `Step`, `Advance`, `StepError`, `AdvanceError` |
 | Bridge | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | Transport | `New` → `(*Endpoint, *Endpoint)` | |
 
 ## Practical Recipes
 
-A paired error-aware run defines dual protocols and lets `RunErrorExpr` create the endpoint pair internally:
+`RunErrorExpr` creates the endpoint pair. Change the request from `42` to `-1` to read the server’s rejection from `thrown`.
 
 ```go
-// 1. Define the protocol on each side using the dual operations.
-clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
-	func(reply string) kont.Expr[string] {
-		return sess.ExprCloseDone(reply)
-	},
-))
-serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
-	return sess.ExprSendThen(
-		fmt.Sprintf("got %d", n),
-		sess.ExprCloseDone[string]("ok"),
-	)
+type RequestError struct{ Reason string }
+
+client := sess.ExprSendThen(42, sess.ExprRecvBind(sess.ExprCloseDone[string]))
+server := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+	if n < 0 {
+		return kont.ExprThrowError[RequestError, string](RequestError{Reason: "negative request"})
+	}
+	return sess.ExprSendThen(fmt.Sprintf("got %d", n), sess.ExprCloseDone("ok"))
 })
 
-// 2. Run both sides in lockstep with error handling.
-type Err struct{ Reason string }
-left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+clientResult, serverResult, thrown := sess.RunErrorExpr[RequestError](client, server)
 if thrown != nil {
-	// The session aborted; left/right may carry only partial results.
-	_ = thrown
+	fmt.Println(thrown.Reason)
+	return
 }
-_ = left; _ = right
+reply, _ := clientResult.GetRight()
+status, _ := serverResult.GetRight()
+fmt.Println(reply, status) // got 42 ok
 ```
 
-For proactor integration, create endpoints with `sess.New()` and drive `StepError` / `AdvanceError` yourself: the suspension yields whenever the underlying transport returns `iox.ErrWouldBlock`, and the loop resumes it when the matching endpoint completes.
+For socket input in a proactor loop, create the endpoint pair with `sess.New()` and pass any suspension from `StepError` to `AdvanceError`. If a receive returns `iox.ErrWouldBlock`, keep that suspension. Retry it after the adapter sends the decoded value through the peer endpoint.
 
 ## References
 
@@ -212,6 +221,7 @@ For proactor integration, create endpoints with `sess.New()` and drive `StepErro
 
 ## Dependencies
 
+- [code.hybscloud.com/atomix](https://code.hybscloud.com/atomix) — Atomic session identifiers and close counts
 - [code.hybscloud.com/kont](https://code.hybscloud.com/kont) — Delimited continuations and algebraic effects
 - [code.hybscloud.com/iox](https://code.hybscloud.com/iox) — Non-blocking semantics (`ErrWouldBlock`, `Backoff`)
 - [code.hybscloud.com/lfq](https://code.hybscloud.com/lfq) — Lock-free FIFO queues

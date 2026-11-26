@@ -14,7 +14,10 @@ import (
 // goroutine using adaptive backoff (iox.Backoff) when neither side
 // can make progress. Does not spawn goroutines or create channels.
 func Run[A, B any](a kont.Eff[A], b kont.Eff[B]) (A, B) {
-	return RunExpr(Reify(a), Reify(b))
+	resultA, suspA := kont.Step(a)
+	resultB, suspB := kont.Step(b)
+	epA, epB := New()
+	return runPair(epA, epB, resultA, suspA, resultB, suspB)
 }
 
 // RunExpr creates a session pair, runs both Expr-world protocols, and
@@ -25,34 +28,28 @@ func RunExpr[A, B any](a kont.Expr[A], b kont.Expr[B]) (A, B) {
 	epA, epB := New()
 	resultA, suspA := Step[A](a)
 	resultB, suspB := Step[B](b)
+	return runPair(epA, epB, resultA, suspA, resultB, suspB)
+}
+
+func runPair[A, B any](epA, epB *Endpoint, resultA A, suspA *kont.Suspension[A], resultB B, suspB *kont.Suspension[B]) (A, B) {
 	var bo iox.Backoff
 
-	var sopA sessionDispatcher
-	if suspA != nil {
-		sopA = runExprSessionDispatcher(suspA.Op())
-	}
-	var sopB sessionDispatcher
-	if suspB != nil {
-		sopB = runExprSessionDispatcher(suspB.Op())
-	}
+	sopA := pendingDispatcher(suspA)
+	sopB := pendingDispatcher(suspB)
 
 	for suspA != nil || suspB != nil {
 		progress := false
 		if suspA != nil {
 			if v, ok := runExprDispatchSession(&epA.ctx, sopA); ok {
 				resultA, suspA = suspA.Resume(v)
-				if suspA != nil {
-					sopA = runExprSessionDispatcher(suspA.Op())
-				}
+				sopA = pendingDispatcher(suspA)
 				progress = true
 			}
 		}
 		if suspB != nil {
 			if v, ok := runExprDispatchSession(&epB.ctx, sopB); ok {
 				resultB, suspB = suspB.Resume(v)
-				if suspB != nil {
-					sopB = runExprSessionDispatcher(suspB.Op())
-				}
+				sopB = pendingDispatcher(suspB)
 				progress = true
 			}
 		}
@@ -65,8 +62,12 @@ func RunExpr[A, B any](a kont.Expr[A], b kont.Expr[B]) (A, B) {
 	return resultA, resultB
 }
 
-func runExprSessionDispatcher(op kont.Operation) sessionDispatcher {
-	sop, ok := op.(sessionDispatcher)
+// A completed role can release its last operation while its peer continues.
+func pendingDispatcher[R any](susp *kont.Suspension[R]) sessionDispatcher {
+	if susp == nil {
+		return nil
+	}
+	sop, ok := susp.Op().(sessionDispatcher)
 	if !ok {
 		panic("sess: unhandled effect in RunExpr")
 	}
@@ -78,8 +79,6 @@ func runExprDispatchSession(ctx *sessionContext, sop sessionDispatcher) (kont.Re
 	if err == nil {
 		return v, true
 	}
-	if !iox.IsWouldBlock(err) {
-		panic("sess: dispatch returned unexpected error: " + err.Error())
-	}
+	requireWouldBlock(err)
 	return nil, false
 }

@@ -7,6 +7,7 @@ package sess_test
 import (
 	"testing"
 
+	"code.hybscloud.com/iox"
 	"code.hybscloud.com/kont"
 	"code.hybscloud.com/sess"
 )
@@ -104,20 +105,18 @@ func TestContStepOpsRaceSafe(t *testing.T) {
 
 	t.Run("recv", func(t *testing.T) {
 		epA, epB := sess.New()
-		_, recvSusp := sess.Step(sess.Reify(sess.RecvBind(func(n int) kont.Eff[int] {
+		_, recvSusp := kont.Step(sess.RecvBind(func(n int) kont.Eff[int] {
 			return sess.CloseDone(n + 1)
-		})))
+		}))
 		if recvSusp == nil {
 			t.Fatal("expected recv suspension")
 		}
-		_, sendSusp := sess.Step(sess.ExprSendThen(41, sess.ExprCloseDone(struct{}{})))
-		if sendSusp == nil {
-			t.Fatal("expected send suspension")
+		_, retry, err := sess.Advance(epA, recvSusp)
+		if retry != recvSusp || !iox.IsWouldBlock(err) {
+			t.Fatalf("empty receive returned (%p, %v), want original suspension and backpressure", retry, err)
 		}
-		if _, _, err := sess.Advance(epB, sendSusp); err != nil {
-			t.Fatalf("advance peer send: %v", err)
-		}
-		result, next, err := sess.Advance(epA, recvSusp)
+		advanceOne(t, epB, kont.ExprPerform(sess.Send[int]{Value: 41}))
+		result, next, err := sess.Advance(epA, retry)
 		if err != nil {
 			t.Fatalf("advance recv: %v", err)
 		}

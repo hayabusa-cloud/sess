@@ -5,13 +5,41 @@
 package sess_test
 
 import (
+	"bytes"
 	"fmt"
+	"runtime"
 	"testing"
 
 	"code.hybscloud.com/iox"
 	"code.hybscloud.com/kont"
 	"code.hybscloud.com/sess"
 )
+
+func ExampleRunExpr() {
+	exchange := func(n int) int {
+		_, received := sess.RunExpr(
+			sess.ExprSendThen(n, sess.ExprCloseDone(struct{}{})),
+			sess.ExprRecvBind(sess.ExprCloseDone[int]),
+		)
+		return received
+	}
+	fmt.Println(exchange(21), exchange(42))
+	// Output: 21 42
+}
+
+func ExampleAdvance() {
+	sender, receiver := sess.New()
+	_, h := sess.Step(kont.ExprPerform(sess.Recv[int]{}))
+	_, pending, err := sess.Advance(receiver, h)
+	fmt.Println(iox.IsWouldBlock(err), pending == h)
+
+	sess.ExecExpr(sender, kont.ExprPerform(sess.Send[int]{Value: 42}))
+	value, next, err := sess.Advance(receiver, pending)
+	fmt.Println(value, next == nil, err)
+	// Output:
+	// true true
+	// 42 true <nil>
+}
 
 func TestStepAdvanceSendRecv(t *testing.T) {
 	skipRace(t)
@@ -46,8 +74,33 @@ func TestStepAdvanceSendRecv(t *testing.T) {
 	}
 }
 
+func TestRecvInterfacePreservesTypedNil(t *testing.T) {
+	sender, receiver := sess.New()
+	var payload *bytes.Buffer
+	advanceOne(t, sender, kont.ExprPerform(sess.Send[*bytes.Buffer]{Value: payload}))
+	got := advanceOne(t, receiver, kont.ExprPerform(sess.Recv[fmt.Stringer]{}))
+	if got != payload {
+		t.Fatalf("received %#v, want (*bytes.Buffer)(nil)", got)
+	}
+}
+
+func TestRecvChecksTypeWhenReplyIsIgnored(t *testing.T) {
+	type message []byte
+	sender, receiver := sess.New()
+	advanceOne(t, sender, kont.ExprPerform(sess.Send[any]{Value: message("hello")}))
+	recv := kont.ExprThen(kont.ExprPerform(sess.Recv[[]byte]{}), kont.ExprReturn(struct{}{}))
+	_, pending := sess.Step(recv)
+	defer pending.Discard()
+	defer func() {
+		got := recover()
+		if _, ok := got.(*runtime.TypeAssertionError); !ok {
+			t.Errorf("receive panic = %v, want a type assertion error", got)
+		}
+	}()
+	sess.Advance(receiver, pending)
+}
+
 func TestStepInspectOperations(t *testing.T) {
-	skipRace(t)
 	// susp.Op() returns concrete Send[int], Close
 	protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
 
@@ -146,58 +199,24 @@ func TestStepCompletion(t *testing.T) {
 }
 
 func TestAdvanceWouldBlock(t *testing.T) {
-	skipRace(t)
-	// Advance returns iox.ErrWouldBlock when queue is empty, retryable
-	protocol := sess.ExprRecvBind(func(n int) kont.Expr[int] {
-		return sess.ExprCloseDone(n)
-	})
-
-	_, susp := sess.Step[int](protocol)
-	if susp == nil {
-		t.Fatal("expected suspension for Recv")
+	sender, receiver := sess.New()
+	_, pending := sess.Step(sess.ExprRecvBind(sess.ExprCloseDone[int]))
+	_, retry, err := sess.Advance(receiver, pending)
+	if !iox.IsWouldBlock(err) || retry != pending {
+		t.Fatalf("empty receive returned (%p, %v), want original suspension and backpressure", retry, err)
 	}
 
-	epA, epB := sess.New()
-
-	// epA's recvQ is empty — should get ErrWouldBlock
-	_, retrySusp, err := sess.Advance(epA, susp)
-	if !iox.IsWouldBlock(err) {
-		t.Fatalf("expected ErrWouldBlock, got %v", err)
+	advanceOne(t, sender, kont.ExprPerform(sess.Send[int]{Value: 99}))
+	_, closing, err := sess.Advance(receiver, retry)
+	if err != nil || closing == nil {
+		t.Fatalf("receive retry returned (%p, %v), want pending Close", closing, err)
 	}
-	if retrySusp != susp {
-		t.Fatal("suspension should be returned unconsumed on error")
+	if _, ok := closing.Op().(sess.Close); !ok {
+		t.Fatalf("receive yielded %T, want Close", closing.Op())
 	}
-
-	// Enqueue from peer side, then retry
-	sender := sess.ExprSendThen(99, sess.ExprCloseDone[struct{}](struct{}{}))
-	done := make(chan struct{})
-	go func() {
-		execExpr(epB, sender)
-		close(done)
-	}()
-
-	// Spin-retry Advance until success
-	var result int
-	for {
-		result, susp, err = sess.Advance(epA, susp)
-		if err == nil {
-			break
-		}
-	}
-	<-done
-
-	if result != 0 {
-		// result is 0 because Recv returns value but Close follows
-	}
-	// Drive remaining suspensions
-	for susp != nil {
-		result, susp, err = sess.Advance(epA, susp)
-		if err != nil {
-			t.Fatalf("Advance error: %v", err)
-		}
-	}
-	if result != 99 {
-		t.Fatalf("result got %d, want 99", result)
+	got, next, err := sess.Advance(receiver, closing)
+	if got != 99 || next != nil || err != nil {
+		t.Fatalf("close returned (%d, %p, %v), want (99, nil, nil)", got, next, err)
 	}
 }
 
@@ -238,239 +257,103 @@ func TestStepAdvanceSelectOfferRight(t *testing.T) {
 }
 
 func TestAdvanceWouldBlockSend(t *testing.T) {
-	skipRace(t)
-	// Advance returns iox.ErrWouldBlock when send queue is full
-	protocol := sess.ExprSendThen(1,
-		sess.ExprSendThen(2,
-			sess.ExprSendThen(3,
-				sess.ExprSendThen(4,
-					sess.ExprSendThen(5, sess.ExprCloseDone[struct{}](struct{}{})),
-				),
-			),
-		),
-	)
-
-	epA, epB := sess.New()
-
-	// Step and advance first four sends to fill the queue (capacity=4)
-	_, susp := sess.Step[struct{}](protocol)
-	_, susp, err := sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("first Send: %v", err)
-	}
-	_, susp, err = sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("second Send: %v", err)
-	}
-	_, susp, err = sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("third Send: %v", err)
-	}
-	_, susp, err = sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("fourth Send: %v", err)
-	}
-
-	// Fifth send should get ErrWouldBlock (queue full, peer hasn't dequeued)
-	_, retrySusp, err := sess.Advance(epA, susp)
-	if !iox.IsWouldBlock(err) {
-		t.Fatalf("expected ErrWouldBlock, got %v", err)
-	}
-	if retrySusp != susp {
-		t.Fatal("suspension should be returned unconsumed on error")
-	}
-
-	// Drain from peer side
-	receiver := sess.ExprRecvBind(func(a int) kont.Expr[int] {
-		return sess.ExprRecvBind(func(b int) kont.Expr[int] {
-			return sess.ExprRecvBind(func(c int) kont.Expr[int] {
-				return sess.ExprRecvBind(func(d int) kont.Expr[int] {
-					return sess.ExprRecvBind(func(e int) kont.Expr[int] {
-						return sess.ExprCloseDone(a + b + c + d + e)
-					})
-				})
-			})
-		})
+	payload := []byte("hello!")[:5]
+	t.Run("Typed", func(t *testing.T) {
+		checkSendRetry(t, sess.Send[[]byte]{Value: payload}, payload)
 	})
-	done := make(chan struct{})
-	go func() {
-		execExpr(epB, receiver)
-		close(done)
-	}()
-
-	// Retry until success
-	for susp != nil {
-		_, susp, err = sess.Advance(epA, susp)
-		if err != nil {
-			continue
+	t.Run("Preboxed", func(t *testing.T) {
+		if allocs := checkSendRetry(t, sess.Send[any]{Value: payload}, payload); allocs != 0 {
+			t.Errorf("refused preboxed send: %g allocs/retry, want 0", allocs)
 		}
-	}
-	<-done
+	})
 }
 
-func TestAdvanceWouldBlockSelectL(t *testing.T) {
-	skipRace(t)
-	// Fill signal queue, then SelectL should get ErrWouldBlock
-	epA, epB := sess.New()
+func checkSendRetry[T any](t *testing.T, send sess.Send[T], payload []byte) float64 {
+	t.Helper()
+	sender, receiver := sess.New()
+	for n := 1; n <= 4; n++ {
+		advanceOne(t, sender, kont.ExprPerform(sess.Send[int]{Value: n}))
+	}
+	_, pending := sess.Step(kont.ExprPerform(send))
+	if _, ok := pending.Op().(sess.Send[T]); !ok {
+		t.Fatalf("pending operation is %T, want %T", pending.Op(), send)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		_, retry, err := sess.Advance(sender, pending)
+		if !iox.IsWouldBlock(err) || retry != pending {
+			t.Fatalf("full queue returned (%p, %v), want original send and backpressure", retry, err)
+		}
+	})
 
-	// Fill signal queue: capacity=4
-	protocol := sess.ExprSelectLThen(
-		sess.ExprSelectLThen(
-			sess.ExprSelectLThen(
-				sess.ExprSelectLThen(
-					sess.ExprSelectLThen(sess.ExprCloseDone[struct{}](struct{}{})),
-				),
-			),
-		),
-	)
-
-	_, susp := sess.Step[struct{}](protocol)
-	_, susp, err := sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("first SelectL: %v", err)
+	if got := advanceOne(t, receiver, kont.ExprPerform(sess.Recv[int]{})); got != 1 {
+		t.Fatalf("first receive got %d, want 1", got)
 	}
-	_, susp, err = sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("second SelectL: %v", err)
+	if _, next, err := sess.Advance(sender, pending); err != nil || next != nil {
+		t.Fatalf("send retry returned (%p, %v), want completion", next, err)
 	}
-	_, susp, err = sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("third SelectL: %v", err)
-	}
-	_, susp, err = sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("fourth SelectL: %v", err)
-	}
-
-	// Fifth select should block
-	_, retrySusp, err := sess.Advance(epA, susp)
-	if !iox.IsWouldBlock(err) {
-		t.Fatalf("expected ErrWouldBlock, got %v", err)
-	}
-	if retrySusp != susp {
-		t.Fatal("suspension should be returned unconsumed on error")
-	}
-
-	// Drain from peer side
-	offerer := sess.ExprOfferBranch(
-		func() kont.Expr[struct{}] {
-			return sess.ExprOfferBranch(
-				func() kont.Expr[struct{}] {
-					return sess.ExprOfferBranch(
-						func() kont.Expr[struct{}] {
-							return sess.ExprOfferBranch(
-								func() kont.Expr[struct{}] {
-									return sess.ExprOfferBranch(
-										func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-										func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-									)
-								},
-								func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-							)
-						},
-						func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-					)
-				},
-				func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-			)
-		},
-		func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-	)
-	done := make(chan struct{})
-	go func() {
-		execExpr(epB, offerer)
-		close(done)
-	}()
-
-	for susp != nil {
-		_, susp, err = sess.Advance(epA, susp)
-		if err != nil {
-			continue
+	for want := 2; want <= 4; want++ {
+		if got := advanceOne(t, receiver, kont.ExprPerform(sess.Recv[int]{})); got != want {
+			t.Fatalf("received %d, want %d", got, want)
 		}
 	}
-	<-done
+	recv := kont.ExprPerform(sess.Recv[[]byte]{})
+	got := advanceOne(t, receiver, recv)
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("received %q, want %q", got, payload)
+	}
+	if cap(got) != cap(payload) || &got[0] != &payload[0] {
+		t.Fatalf("received slice capacity %d at %p, want %d at %p", cap(got), got, cap(payload), payload)
+	}
+	_, empty := sess.Step(recv)
+	if _, next, err := sess.Advance(receiver, empty); next != empty || !iox.IsWouldBlock(err) {
+		t.Fatalf("receive after delivery returned (%p, %v), want an empty queue", next, err)
+	}
+	empty.Discard()
+	return allocs
 }
 
-func TestAdvanceWouldBlockSelectR(t *testing.T) {
-	skipRace(t)
-	// Fill signal queue with SelectR, then should get ErrWouldBlock
-	epA, epB := sess.New()
+func TestAdvanceWouldBlockSelect(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fifth    kont.Expr[struct{}]
+		wantLeft bool
+	}{
+		{"left", kont.ExprPerform(sess.SelectL{}), true},
+		{"right", kont.ExprPerform(sess.SelectR{}), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sender, receiver := sess.New()
+			for range 4 {
+				advanceOne(t, sender, kont.ExprPerform(sess.SelectL{}))
+			}
+			_, pending := sess.Step(tc.fifth)
+			_, retry, err := sess.Advance(sender, pending)
+			if !iox.IsWouldBlock(err) || retry != pending {
+				t.Fatalf("full queue returned (%p, %v), want original selection and backpressure", retry, err)
+			}
 
-	protocol := sess.ExprSelectRThen(
-		sess.ExprSelectRThen(
-			sess.ExprSelectRThen(
-				sess.ExprSelectRThen(
-					sess.ExprSelectRThen(sess.ExprCloseDone[struct{}](struct{}{})),
-				),
-			),
-		),
-	)
-
-	_, susp := sess.Step[struct{}](protocol)
-	_, susp, err := sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("first SelectR: %v", err)
+			// A payload receive cannot free a choice slot.
+			advanceOne(t, sender, kont.ExprPerform(sess.Send[int]{Value: 42}))
+			if got := advanceOne(t, receiver, kont.ExprPerform(sess.Recv[int]{})); got != 42 {
+				t.Fatalf("received payload %d, want 42", got)
+			}
+			if _, same, err := sess.Advance(sender, retry); !iox.IsWouldBlock(err) || same != retry {
+				t.Fatalf("after payload receive got (%p, %v), want selection still pending", same, err)
+			}
+			if offer := advanceOne(t, receiver, kont.ExprPerform(sess.Offer{})); !offer.IsLeft() {
+				t.Fatal("first offer took the right branch")
+			}
+			if _, next, err := sess.Advance(sender, retry); err != nil || next != nil {
+				t.Fatalf("selection retry returned (%p, %v), want completion", next, err)
+			}
+			for i := range 4 {
+				gotLeft := advanceOne(t, receiver, kont.ExprPerform(sess.Offer{})).IsLeft()
+				if wantLeft := i < 3 || tc.wantLeft; gotLeft != wantLeft {
+					t.Fatalf("offer %d selected left=%t, want %t", i+2, gotLeft, wantLeft)
+				}
+			}
+		})
 	}
-	_, susp, err = sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("second SelectR: %v", err)
-	}
-	_, susp, err = sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("third SelectR: %v", err)
-	}
-	_, susp, err = sess.Advance(epA, susp)
-	if err != nil {
-		t.Fatalf("fourth SelectR: %v", err)
-	}
-
-	// Fifth select should block
-	_, retrySusp, err := sess.Advance(epA, susp)
-	if !iox.IsWouldBlock(err) {
-		t.Fatalf("expected ErrWouldBlock, got %v", err)
-	}
-	if retrySusp != susp {
-		t.Fatal("suspension should be returned unconsumed on error")
-	}
-
-	// Drain from peer side
-	offerer := sess.ExprOfferBranch(
-		func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-		func() kont.Expr[struct{}] {
-			return sess.ExprOfferBranch(
-				func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-				func() kont.Expr[struct{}] {
-					return sess.ExprOfferBranch(
-						func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-						func() kont.Expr[struct{}] {
-							return sess.ExprOfferBranch(
-								func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-								func() kont.Expr[struct{}] {
-									return sess.ExprOfferBranch(
-										func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-										func() kont.Expr[struct{}] { return sess.ExprCloseDone[struct{}](struct{}{}) },
-									)
-								},
-							)
-						},
-					)
-				},
-			)
-		},
-	)
-	done := make(chan struct{})
-	go func() {
-		execExpr(epB, offerer)
-		close(done)
-	}()
-
-	for susp != nil {
-		_, susp, err = sess.Advance(epA, susp)
-		if err != nil {
-			continue
-		}
-	}
-	<-done
 }
 
 func TestAdvanceUnhandledPanics(t *testing.T) {

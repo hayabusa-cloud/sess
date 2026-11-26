@@ -1,5 +1,5 @@
 [![Go Reference](https://pkg.go.dev/badge/code.hybscloud.com/sess.svg)](https://pkg.go.dev/code.hybscloud.com/sess)
-[![Go Report Card](https://goreportcard.com/badge/github.com/hayabusa-cloud/sess)](https://goreportcard.com/report/github.com/hayabusa-cloud/sess)
+[![Benchmarks](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/hayabusa-cloud/sess/actions/workflows/benchmarks.yml)
 [![Coverage Status](https://codecov.io/gh/hayabusa-cloud/sess/graph/badge.svg)](https://codecov.io/gh/hayabusa-cloud/sess)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -7,19 +7,26 @@
 
 # sess
 
-[kont](https://code.hybscloud.com/kont) の代数的エフェクトによるセッション型通信プロトコル。
+通信する双方は、やり取りするメッセージの型と順序をそろえておく必要があります。`sess` には **Cont** と **Expr** という二つの世界があり、どちらでも同じロールのプロトコルを Go で記述できます。
 
 ## 概要
 
-セッション型は通信プロトコルの各ステップに型を割り当てます。各操作 — 送信、受信、選択、提供、クローズ — は Go ジェネリクスにより個別に型安全であり、単一エンドポイント内のプロトコル合成も型安全です。双対性（エンドポイント間の操作の対応）はプログラマの責任です：プログラマが双対プロトコルを記述し、不一致は実行時に型アサーション失敗またはデッドロックとして現れます。
+`sess` はプロトコルの各操作を [kont](https://code.hybscloud.com/kont) の代数的エフェクトとして表します。各ロールは値を送受信し、分岐を選んだり相手の選択に従ったりし、自分のエンドポイントを閉じることができます。
 
-`sess` はセッション型を [kont](https://code.hybscloud.com/kont) エフェクトシステムで評価される代数的エフェクトとしてエンコードします。各プロトコルステップ — 送信、受信、選択、提供、クローズ — はトランスポートが操作を完了するまで計算を中断するエフェクトです。トランスポートは計算境界で `iox.ErrWouldBlock` を返し、proactor イベントループ（例：`io_uring`）がスレッドをブロックせずに実行を多重化できるようにします。
+Go の関数を組み合わせてロールを記述するには、**Cont**（`kont.Eff[A]`）を使います。`RecvBind` は受信した値を関数に渡し、その関数がロールの残りのプロトコルを返します。`Run` は両方のロールを実行します。相手側が別に動作している場合は、`Exec` で片方のエンドポイントを実行します。
 
-等価な API ファミリは 2 つあります。Cont（クロージャベースで合成しやすい）と Expr（フレームベースで、ホットパス向けに償却ゼロアロケーション）です。
+残りの処理を明示的な継続フレームで表すには、**Expr**（`kont.Expr[A]`）を使います。`io_uring` のイベントループなどのドライバは `kont.Step(cont)` または `sess.Step(expr)` を呼び出せます。どちらも結果またはサスペンションを返します。セッション操作が保留中なら、そのサスペンションを `sess.Advance` に渡します。受信時に `iox.ErrWouldBlock` が返ったら、同じサスペンションを保持し、相手が値を送信してから再試行します。
+
+次の二つは同じ受信ロールです。どちらも `int` を受信し、自分の側で `Close` を実行してから受信値を返します。送信ロールと組み合わせて、Cont では `Run`、Expr では `RunExpr` で実行します。
+
+```go
+contReceiver := sess.RecvBind(sess.CloseDone[int])
+exprReceiver := sess.ExprRecvBind(sess.ExprCloseDone[int])
+```
 
 ## 合成境界
 
-`sess` はセッションのエフェクトシグネチャと、それを解釈するエンドポイントトランスポートを所有します。有界キュー上のノンブロッキング境界として `iox.ErrWouldBlock` を使いますが、`iox` アウトカム代数全体は所有しません。`takt` は proactor 型のスケジューリングと完了相関を所有し、`cove` はサスペンションを含む合成のためのコンテキスト証拠を所有します。`sess` 内では、`iox.ErrMore` はエンドポイントトランスポート領域の外にあり、予期しないディスパッチャ失敗として扱われます。
+エンドポイントは、容量に上限のあるキューを通じて値や分岐の選択をやり取りします。満杯のキューへの追加や空のキューからの取り出しを試みると、`iox.ErrWouldBlock` が返ります。ドライバは `takt` でバックエンドの完了を要求に対応付け、`tempo` でイベント履歴を追跡し、`cove` で試行のたびに現在のコンテキストを確認できます。エンドポイントのトランスポートでは `iox.ErrMore` をディスパッチャのエラーとして扱います。
 
 ## インストール
 
@@ -27,23 +34,25 @@
 go get code.hybscloud.com/sess
 ```
 
-Go 1.26+ が必要です。
+Go 1.27+ が必要です。
 
 ## セッション操作
 
-各操作には双対があります。一方のエンドポイントが操作を行うと、他方はその双対操作を行う必要があります。
+Go は各操作のペイロードと応答の型を検査します。各送信には、その段階で送り得るすべての値 `v` について型アサーション `v.(T)` が成功する `Recv[T]` を対応させます。たとえば、`Send[any]` で送った `[]byte` は `Recv[[]byte]` で受け取れます。分岐の選択には相手側の `Offer` を対応させます。データと分岐の選択は別々のキューを通るため、両者の操作順序が食い違っていても実行が完了することがあります。
 
-| 操作 | 双対 | サスペンド？ |
+| 操作 | 双対 | バックプレッシャー |
 |------|------|-------------|
 | `Send[T]` — 値を送信 | `Recv[T]` — 値を受信 | `iox.ErrWouldBlock` |
 | `SelectL` / `SelectR` — 分岐を選択 | `Offer` — ピアの選択に従う | `iox.ErrWouldBlock` |
-| `Close` — セッションを終了 | `Close` | しない |
+| `Close` — 自分の側の終了を通知 | `Close` | しない |
 
 ## 使い方
 
-プロトコルの試作と検証には `Run` を使用します。外部管理のエンドポイントには `Exec` を使用します。ステッピング制御が必要な場合や、ホットパスでのアロケーションオーバーヘッドを最小化したい場合は Expr API（`RunExpr`/`ExecExpr`）を使用します。
+両方のロールを 1 つのゴルーチンで実行する場合は `Run`、外部で管理する片側のエンドポイントには `Exec`、ドライバが再試行のタイミングを決める場合は `Step` と `Advance` を使用します。
 
 ### 送受信
+
+送信に成功するとペイロードがキューに入ります。相手側で処理が終わったことを送信側が知る必要がある場合は、処理後に相手側から確認応答を返すようにします。
 
 ```go
 client := sess.SendThen(42, sess.CloseDone("ok"))
@@ -87,34 +96,37 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 
 ### 委譲
 
-エンドポイントを送信して第三者に転送し、受信して委譲を受け入れます。
+送信が成功すると、エンドポイントは転送中となり、受信側がキューから取り出した時点で所有権が移ります。送信が `iox.ErrWouldBlock` を返した場合、所有権は送信側に残ります。
 
 ```go
-delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
-acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
-	return sess.CloseDone("accepted")
-})
+endpoint, peer := sess.New()
+delegator := sess.SendThen(endpoint, sess.CloseDone(struct{}{}))
+acceptor := sess.RecvBind(sess.CloseDone[*sess.Endpoint])
+_, received := sess.Run(delegator, acceptor)
+
+sess.Exec(received, sess.SendThen("hello", sess.CloseDone(struct{}{})))
+message := sess.Exec(peer, sess.RecvBind(sess.CloseDone[string]))
+fmt.Println(message) // hello
 ```
 
 ### ステッピング
 
-proactor イベントループ（例：`io_uring`）向けに、`Step` と `Advance` は一度に1つのエフェクトを評価します。`Run` や `Exec` — 同期的に進行を待つ — とは異なり、ステッピング API は `iox.ErrWouldBlock` を呼び出し元に返し、イベントループが再スケジュールできるようにします。
+`Step` は保留中の受信操作を返します。キューが空の間、`Advance` は同じサスペンションを返します。相手が送信した後、そのサスペンションで再試行すると値を受け取れます。
 
 ```go
-ep, _ := sess.New()
-protocol := sess.ExprSendThen(42, sess.ExprCloseDone[struct{}](struct{}{}))
-_, susp := sess.Step[struct{}](protocol)
-// proactor イベントループ（例: io_uring）では、境界でイールドする:
-_, nextSusp, err := sess.Advance(ep, susp)
-if err != nil {
-	return susp // イベントループへ制御を戻し、準備できたら再スケジュールする
-}
-susp = nextSusp
+sender, receiver := sess.New()
+_, h := sess.Step(kont.ExprPerform(sess.Recv[int]{}))
+_, pending, err := sess.Advance(receiver, h)
+fmt.Println(iox.IsWouldBlock(err), pending == h) // true true
+
+sess.ExecExpr(sender, kont.ExprPerform(sess.Send[int]{Value: 42}))
+value, next, err := sess.Advance(receiver, pending)
+fmt.Println(value, next == nil, err) // 42 true <nil>
 ```
 
 ### エラー処理
 
-セッションプロトコルをエラーエフェクトと合成できます。`Throw` は対になった実行を即座に中断します。返される `thrown` はセッション全体における未捕捉 `Throw` の原因なので、peer 側の `Either` を解釈する前に確認してください。
+エラー処理付きのペア実行は、対象の型に一致する未捕捉の `Throw` を処理すると終了します。相手側の `Either` を解釈する前に、返された `thrown` を確認してください。
 
 ```go
 client := kont.ExprThrowError[string, string]("boom")
@@ -149,13 +161,15 @@ fmt.Println(clientResult, serverResult)
 | `Exec` / `ExecExpr` | 作成済みエンドポイント上で片側を実行 |
 | `Step` + `Advance` | 外部イベントループ向けに、エフェクトを一つずつ評価 |
 
-**Cont と Expr の使い分け**: Cont はクロージャベースで合成が容易。Expr はフレームベースで償却ゼロアロケーション、ホットパスに適する。
+プロトコル全体を実行した場合と、満杯のキューに対して再試行した場合のメモリ割り当てを計測できます。[ベンチマークガイド](BENCHMARKS.md)
 
 ## 契約
 
 `sess` は信頼された呼び出し側を前提とするトランスポート API です。各エンドポイントは同時に 1 つの goroutine だけが扱う前提であり、ホットパスには並行利用のガードや `Close` 後の検査を意図的に入れていません。
 
 ペイロード型がインタフェースであっても、値は具体的な動的型を持っている必要があります。`any(nil)` や `error(nil)` のような nil インタフェース値は契約外です。nil 自体に意味がある場合は、具体型を持つ nil 値を使うか、明示的なラッパーで包んでください。
+
+`ExprSendThen` などの融合コンストラクタが返す式は一度だけ実行できます。実行のたびに、そのロールの式を組み立て直してください。
 
 ## API
 
@@ -165,39 +179,36 @@ fmt.Println(clientResult, serverResult)
 | 再帰 | `Loop` | `ExprLoop` |
 | 実行 | `Exec`, `Run` | `ExecExpr`, `RunExpr` |
 | エラー実行 | `ExecError`, `RunError` | `ExecErrorExpr`, `RunErrorExpr` |
-| ステッピング | | `Step`, `Advance`, `StepError`, `AdvanceError` |
+| ステッピング | `kont.Step`, `Advance` | `Step`, `Advance`, `StepError`, `AdvanceError` |
 | ブリッジ | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | トランスポート | `New` → `(*Endpoint, *Endpoint)` | |
 
 ## 実用レシピ
 
-エラーを考慮したペア実行では、双対な両側プロトコルを定義し、`RunErrorExpr` に内部でエンドポイントペアを生成させます：
+`RunErrorExpr` がエンドポイントのペアを作成します。リクエストの値を `42` から `-1` に変えると、サーバーがリクエストを拒否し、その理由が `thrown` に返ります。
 
 ```go
-// 1. 双対操作を用いて両側のプロトコルを定義する。
-clientProg := sess.ExprSendThen(42, sess.ExprRecvBind(
-	func(reply string) kont.Expr[string] {
-		return sess.ExprCloseDone(reply)
-	},
-))
-serverProg := sess.ExprRecvBind(func(n int) kont.Expr[string] {
-	return sess.ExprSendThen(
-		fmt.Sprintf("got %d", n),
-		sess.ExprCloseDone[string]("ok"),
-	)
+type RequestError struct{ Reason string }
+
+client := sess.ExprSendThen(42, sess.ExprRecvBind(sess.ExprCloseDone[string]))
+server := sess.ExprRecvBind(func(n int) kont.Expr[string] {
+	if n < 0 {
+		return kont.ExprThrowError[RequestError, string](RequestError{Reason: "negative request"})
+	}
+	return sess.ExprSendThen(fmt.Sprintf("got %d", n), sess.ExprCloseDone("ok"))
 })
 
-// 2. 両側を歩調を合わせて駆動し、エラーを処理する。
-type Err struct{ Reason string }
-left, right, thrown := sess.RunErrorExpr[Err](clientProg, serverProg)
+clientResult, serverResult, thrown := sess.RunErrorExpr[RequestError](client, server)
 if thrown != nil {
-	// セッションが中断された。left/right には部分結果しか含まれない場合がある。
-	_ = thrown
+	fmt.Println(thrown.Reason)
+	return
 }
-_ = left; _ = right
+reply, _ := clientResult.GetRight()
+status, _ := serverResult.GetRight()
+fmt.Println(reply, status) // got 42 ok
 ```
 
-プロアクター統合では `sess.New()` でエンドポイントを作成し、`StepError` / `AdvanceError` を自分で駆動します。下層トランスポートが `iox.ErrWouldBlock` を返すたびに中断がイールドし、対応するエンドポイントが完了したときにループが再開します。
+プロアクターのイベントループでソケットからの入力を扱う場合は、`sess.New()` でペアを作り、`StepError` がサスペンションを返したら `AdvanceError` に渡します。受信時に `iox.ErrWouldBlock` が返ったら、そのサスペンションを保持します。アダプターがデコードした値を相手側のエンドポイントから送信できたら、同じサスペンションで受信を再試行します。
 
 ## 参考文献
 
@@ -210,6 +221,7 @@ _ = left; _ = right
 
 ## 依存関係
 
+- [code.hybscloud.com/atomix](https://code.hybscloud.com/atomix) — セッション識別子とクローズ回数のアトミックな更新
 - [code.hybscloud.com/kont](https://code.hybscloud.com/kont) — 限定継続と代数的エフェクト
 - [code.hybscloud.com/iox](https://code.hybscloud.com/iox) — ノンブロッキングセマンティクス（`ErrWouldBlock`、`Backoff`）
 - [code.hybscloud.com/lfq](https://code.hybscloud.com/lfq) — ロックフリー FIFO キュー

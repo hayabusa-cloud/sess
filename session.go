@@ -19,12 +19,11 @@ const channelCapacity = 4
 // sessionContext holds the lock-free transport for a single endpoint.
 // Each direction is a single-producer single-consumer bounded queue.
 type sessionContext struct {
-	sendQ    *lfq.SPSC[any]
-	recvQ    *lfq.SPSC[any]
-	signalQ  *lfq.SPSC[bool]
-	awaitQ   *lfq.SPSC[bool]
-	closed   *atomix.Uint32
-	sendSlot any
+	sendQ   *lfq.SPSC[any]
+	recvQ   *lfq.SPSC[any]
+	signalQ *lfq.SPSC[bool]
+	awaitQ  *lfq.SPSC[bool]
+	closed  *atomix.Uint32
 }
 
 // sessionDispatcher is the structural interface for session operations.
@@ -64,10 +63,15 @@ func dispatchWait(ctx *sessionContext, sop sessionDispatcher) kont.Resumed {
 		if err == nil {
 			return v
 		}
-		if !iox.IsWouldBlock(err) {
-			panic("sess: dispatch returned unexpected error: " + err.Error())
-		}
+		requireWouldBlock(err)
 		bo.Wait()
+	}
+}
+
+// A synchronous runner may retry only a would-block transport error.
+func requireWouldBlock(err error) {
+	if !iox.IsWouldBlock(err) {
+		panic("sess: dispatch returned unexpected error: " + err.Error())
 	}
 }
 

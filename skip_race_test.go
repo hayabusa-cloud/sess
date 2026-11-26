@@ -8,11 +8,9 @@ package sess_test
 
 import "testing"
 
-// skipRace skips tests that exercise lfq SPSC transport.
-// The race detector tracks per-variable happens-before and cannot
-// see SPSC's cross-variable memory ordering (store-release on data,
-// load-acquire on index), producing false positives.
+// The race detector does not observe lfq's atomix publication of queue slots.
+// Only tests with a concurrent producer and consumer need this skip.
 func skipRace(tb testing.TB) {
 	tb.Helper()
-	tb.Skip("skip: SPSC uses cross-variable memory ordering")
+	tb.Skip("race detector cannot observe concurrent lfq slot handoff")
 }
