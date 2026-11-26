@@ -48,7 +48,7 @@ func ExprSendThen[T, B any](v T, next kont.Expr[B]) kont.Expr[B] {
 func recvBindUnwind[T, B any](data, _, _ kont.Erased, current kont.Erased) (kont.Erased, kont.Frame) {
 	f := data.(func(T) kont.Expr[B])
 	result := f(current.(T))
-	return kont.Erased(result.Value), result.Frame
+	return frameInput(&result), result.Frame
 }
 
 // ExprRecvBind builds a single-use expression that receives a value and passes it to f.
@@ -99,7 +99,7 @@ func offerBranchUnwind[A any](data, data2, _ kont.Erased, current kont.Erased) (
 	} else {
 		result = onRight()
 	}
-	return kont.Erased(result.Value), result.Frame
+	return frameInput(&result), result.Frame
 }
 
 // ExprOfferBranch builds a single-use expression that calls onLeft or onRight on the peer's choice.

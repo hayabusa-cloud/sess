@@ -25,13 +25,17 @@ func Reflect[A any](m kont.Expr[A]) kont.Eff[A] {
 // has a different result type. next receives m's final value.
 func enterExpr[A any](m kont.Expr[A], next kont.Frame) kont.Frame {
 	first := kont.AcquireThenFrame()
-	first.Second = kont.Expr[kont.Erased]{Frame: m.Frame}
-	// An EffectFrame resumes with the operation's reply.
-	if _, effect := m.Frame.(*kont.EffectFrame[kont.Erased]); !effect {
-		first.Second.Value = m.Value
-	}
+	first.Second = kont.Expr[kont.Erased]{Value: frameInput(&m), Frame: m.Frame}
 	first.Next = next
 	return first
+}
+
+// An explicit effect starts with its dispatch reply. Other frames may read m.Value.
+func frameInput[A any](m *kont.Expr[A]) kont.Erased {
+	if _, effect := m.Frame.(*kont.EffectFrame[kont.Erased]); effect {
+		return nil
+	}
+	return m.Value
 }
 
 // A bare nil at a kont result boundary represents the zero value of A.

@@ -44,6 +44,29 @@ func TestExprSendThenPreservesNextInput(t *testing.T) {
 	}
 }
 
+func TestExprCallbacksPreserveNextInput(t *testing.T) {
+	addOne := kont.MapFrame[int, int]{F: func(n int) int { return n + 1 }, Next: kont.ReturnFrame{}}
+	from := func(n int) kont.Expr[int] { return kont.Expr[int]{Value: n, Frame: addOne.AsFrame()} }
+	receive := func(n int) kont.Expr[int] { return from(n + 1) }
+	left := func() kont.Expr[int] { return from(10) }
+	right := func() kont.Expr[int] { return from(20) }
+
+	for _, tc := range []struct {
+		name string
+		peer kont.Expr[struct{}]
+		role kont.Expr[int]
+		want int
+	}{
+		{"receive", kont.ExprPerform(sess.Send[int]{Value: 40}), sess.ExprRecvBind(receive), 42},
+		{"offer left", kont.ExprPerform(sess.SelectL{}), sess.ExprOfferBranch(left, right), 11},
+		{"offer right", kont.ExprPerform(sess.SelectR{}), sess.ExprOfferBranch(left, right), 21},
+	} {
+		if _, got := sess.RunExpr(tc.peer, tc.role); got != tc.want {
+			t.Errorf("%s returned %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestExprSendRecvMultiple(t *testing.T) {
 	// !int.!int.?int.end ↔ ?int.?int.!int.end
 	client := sess.ExprSendThen(10,

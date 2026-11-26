@@ -224,6 +224,22 @@ func BenchmarkExprSendRecvStructResult(b *testing.B) {
 	}
 }
 
+// BenchmarkExprRecvBindStructResult returns a four-word summary from the receiving role.
+func BenchmarkExprRecvBindStructResult(b *testing.B) {
+	type summary struct{ count, sum, min, max int64 }
+	want := summary{1, 42, 42, 42}
+	b.ReportAllocs()
+	for b.Loop() {
+		sender := sess.ExprSendThen(int64(42), sess.ExprCloseDone(struct{}{}))
+		receiver := sess.ExprRecvBind(func(n int64) kont.Expr[summary] {
+			return sess.ExprCloseDone(summary{1, n, n, n})
+		})
+		if _, got := sess.RunExpr(sender, receiver); got != want {
+			b.Fatalf("received summary %v, want %v", got, want)
+		}
+	}
+}
+
 // BenchmarkExprProtocol3Step measures Expr-world 3-step protocol.
 func BenchmarkExprProtocol3Step(b *testing.B) {
 	b.ReportAllocs()

@@ -6,7 +6,7 @@ Run the suite on Linux with the Go 1.27.x Atomix compiler on `PATH`. Record the 
 GOWORK=off GOTOOLCHAIN=local GOMAXPROCS=2 make bench
 ```
 
-The paired workloads build the programs and create their endpoints inside each iteration. Compare the Cont and Expr variants for send/receive, a three-step exchange, branch selection and recursion. `BenchmarkExprSendRecvStructResult` returns a 32-byte summary from the sending role. Delegation, `Exec` and concurrent stepping also include peer goroutine setup and handoff.
+The paired workloads build the programs and create their endpoints inside each iteration. Compare the Cont and Expr variants for send/receive, a three-step exchange, branch selection and recursion. `BenchmarkExprSendRecvStructResult` returns a 32-byte summary from the sender. `BenchmarkExprRecvBindStructResult` builds one in the receive callback and returns it after `Close`. Delegation, `Exec` and concurrent stepping also include peer goroutine setup and handoff.
 
 `BenchmarkSendRetry` measures one refused `Advance` on a full queue. Each iteration retries the same pending pointer send. `BenchmarkSendRetryBytes` and `BenchmarkSendRetryValue32` repeat it with a nonempty byte slice and a 32-byte value. `BenchmarkSendRetryBytesPreboxed` constructs `Send[any]` before timing so retries reuse the boxed slice. `BenchmarkChannelSendRetry` is the corresponding pointer send on a full buffered Go channel.
 
@@ -16,7 +16,7 @@ To compare two revisions, run the same workloads on the same machine and keep al
 
 ```sh
 GOWORK=off GOTOOLCHAIN=local GOMAXPROCS=2 go test -mod=readonly -run '^$' \
-  -bench '^Benchmark(SendRetry(Bytes(Preboxed)?|Value32)?|SendDelivery|ChannelSendRetry|(Expr)?SendRecv)$' \
+  -bench '^Benchmark((Expr)?(Send|Recv)|ChannelSend)' \
   -benchmem -benchtime=200ms -count=10 -timeout=5m .
 ```
 
