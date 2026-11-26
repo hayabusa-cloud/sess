@@ -5,11 +5,24 @@
 package sess_test
 
 import (
+	"fmt"
 	"testing"
 
 	"code.hybscloud.com/kont"
 	"code.hybscloud.com/sess"
 )
+
+func ExampleEndpoint_delegation() {
+	endpoint, peer := sess.New()
+	delegator := sess.SendThen(endpoint, sess.CloseDone(struct{}{}))
+	acceptor := sess.RecvBind(sess.CloseDone[*sess.Endpoint])
+	_, received := sess.Run(delegator, acceptor)
+
+	sess.Exec(received, sess.SendThen("hello", sess.CloseDone(struct{}{})))
+	message := sess.Exec(peer, sess.RecvBind(sess.CloseDone[string]))
+	fmt.Println(message)
+	// Output: hello
+}
 
 func TestDelegAcceptRoundtrip(t *testing.T) {
 	skipRace(t)

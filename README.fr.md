@@ -96,13 +96,17 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 
 ### Délégation
 
-Transférez un endpoint à un tiers en l'envoyant ; acceptez la délégation en le recevant.
+Après un envoi réussi, l’endpoint est en transit jusqu’à ce que le destinataire le retire de la file. Si l’envoi renvoie `iox.ErrWouldBlock`, l’expéditeur reste propriétaire de l’endpoint.
 
 ```go
-delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
-acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
-	return sess.CloseDone("accepted")
-})
+endpoint, peer := sess.New()
+delegator := sess.SendThen(endpoint, sess.CloseDone(struct{}{}))
+acceptor := sess.RecvBind(sess.CloseDone[*sess.Endpoint])
+_, received := sess.Run(delegator, acceptor)
+
+sess.Exec(received, sess.SendThen("hello", sess.CloseDone(struct{}{})))
+message := sess.Exec(peer, sess.RecvBind(sess.CloseDone[string]))
+fmt.Println(message) // hello
 ```
 
 ### Pas à pas

@@ -96,13 +96,17 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 
 ### 委托
 
-通过发送端点将其转移给第三方；通过接收来接受委托。
+发送成功后，端点的所有权随消息传递，接收方从队列中取出端点时取得所有权。如果发送返回 `iox.ErrWouldBlock`，端点仍由发送方持有。
 
 ```go
-delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
-acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
-	return sess.CloseDone("accepted")
-})
+endpoint, peer := sess.New()
+delegator := sess.SendThen(endpoint, sess.CloseDone(struct{}{}))
+acceptor := sess.RecvBind(sess.CloseDone[*sess.Endpoint])
+_, received := sess.Run(delegator, acceptor)
+
+sess.Exec(received, sess.SendThen("hello", sess.CloseDone(struct{}{})))
+message := sess.Exec(peer, sess.RecvBind(sess.CloseDone[string]))
+fmt.Println(message) // hello
 ```
 
 ### 步进

@@ -96,13 +96,17 @@ counter := sess.Loop(0, func(i int) kont.Eff[kont.Either[int, string]] {
 
 ### 委譲
 
-エンドポイントを送信して第三者に転送し、受信して委譲を受け入れます。
+送信が成功すると、エンドポイントは転送中となり、受信側がキューから取り出した時点で所有権が移ります。送信が `iox.ErrWouldBlock` を返した場合、所有権は送信側に残ります。
 
 ```go
-delegator := sess.SendThen(endpoint, sess.CloseDone("delegated"))
-acceptor := sess.RecvBind(func(ep *sess.Endpoint) kont.Eff[string] {
-	return sess.CloseDone("accepted")
-})
+endpoint, peer := sess.New()
+delegator := sess.SendThen(endpoint, sess.CloseDone(struct{}{}))
+acceptor := sess.RecvBind(sess.CloseDone[*sess.Endpoint])
+_, received := sess.Run(delegator, acceptor)
+
+sess.Exec(received, sess.SendThen("hello", sess.CloseDone(struct{}{})))
+message := sess.Exec(peer, sess.RecvBind(sess.CloseDone[string]))
+fmt.Println(message) // hello
 ```
 
 ### ステッピング
