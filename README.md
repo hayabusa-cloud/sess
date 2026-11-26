@@ -13,9 +13,9 @@ Two peers need to agree on the types and order of their messages. In `sess`, the
 
 `sess` represents each protocol action as an algebraic effect on [kont](https://code.hybscloud.com/kont). A role can send or receive a value, choose or follow a branch, and close its endpoint.
 
-Use **Cont** (`kont.Eff[A]`) when you want the runner to handle retries. `RecvBind` passes the received value to a function that returns the rest of the role’s protocol. `Run` drives both roles. Use `Exec` for one endpoint while its peer runs separately.
+Use **Cont** (`kont.Eff[A]`) to compose a role with Go functions. `RecvBind` passes the received value to a function that returns the rest of the role’s protocol. `Run` drives both roles. Use `Exec` for one endpoint while its peer runs separately.
 
-Use **Expr** (`kont.Expr[A]`) when a driver such as an `io_uring` event loop needs to inspect operations or schedule retries. Continuation frames hold the remaining work. `Step` returns a result or a suspension, and `Advance` tries the suspended operation on the endpoint. If `Advance` returns `iox.ErrWouldBlock` on a receive, keep the same suspension and retry after the peer sends.
+Use **Expr** (`kont.Expr[A]`) to represent the remaining work as explicit continuation frames. A driver such as an `io_uring` event loop can call `kont.Step(cont)` or `sess.Step(expr)`. Both return a result or a suspension. For a pending session operation, pass its suspension to `sess.Advance`. If a receive returns `iox.ErrWouldBlock`, keep the same suspension and retry after the peer sends.
 
 In both versions, the role receives an `int`, performs a local `Close`, and returns the value. Pair it with a sender using `Run` for Cont or `RunExpr` for Expr.
 
@@ -179,7 +179,7 @@ Fused constructors such as `ExprSendThen` build single-use expressions. Build th
 | Recursion | `Loop` | `ExprLoop` |
 | Execution | `Exec`, `Run` | `ExecExpr`, `RunExpr` |
 | Error execution | `ExecError`, `RunError` | `ExecErrorExpr`, `RunErrorExpr` |
-| Stepping | | `Step`, `Advance`, `StepError`, `AdvanceError` |
+| Stepping | `kont.Step`, `Advance` | `Step`, `Advance`, `StepError`, `AdvanceError` |
 | Bridge | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | Transport | `New` → `(*Endpoint, *Endpoint)` | |
 

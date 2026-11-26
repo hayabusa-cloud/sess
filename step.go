@@ -8,8 +8,9 @@ import (
 	"code.hybscloud.com/kont"
 )
 
-// Step evaluates a session protocol until the first effect suspension.
-// Returns (result, nil) on completion, or (zero, suspension) if pending.
+// Step evaluates an Expr role to its first return or operation. It returns
+// (result, nil) on completion or (zero, suspension) while pending.
+// For a Cont role, [kont.Step] returns the same suspension type for [Advance].
 func Step[R any](protocol kont.Expr[R]) (R, *kont.Suspension[R]) {
 	return kont.StepExpr(protocol)
 }

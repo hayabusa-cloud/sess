@@ -31,15 +31,17 @@
 //
 // # Integration
 //
-//   - Stepping: [Step] and [Advance] (or [StepError]/[AdvanceError]) evaluate computations one effect at a time, making them easy to integrate with a proactor loop.
+//   - Stepping: Start an Expr role with [Step] or a Cont role with [code.hybscloud.com/kont.Step].
+//     Pass the resulting suspension to [Advance] to try its session operation.
+//     For typed errors, start with [StepError]. Pass it an Expr directly or [Reify] a Cont first.
 //   - Blocking: [Exec], [Run] (and Error/Expr variants) wait past boundaries using adaptive backoff.
 //
 // A driver can use takt for backend completions and tempo for event history.
 // To guard a pending operation, call [code.hybscloud.com/cove.CheckSuspension]
 // with the current context before each attempt. A failed check leaves the
 // original suspension live for retry or discard. While the requirement holds,
-// pass the view's Suspension to [Advance] after [Step]. After [StepError],
-// use [AdvanceError] to handle a matching [code.hybscloud.com/kont.Throw] as Left.
+// pass the view's Suspension to [Advance]. If it came from [StepError], use
+// [AdvanceError] to handle a matching [code.hybscloud.com/kont.Throw] as Left.
 //
 // On [code.hybscloud.com/iox.ErrWouldBlock], retain the returned suspension and
 // retry after the peer makes progress. A successful send places the payload in

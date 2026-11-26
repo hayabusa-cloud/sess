@@ -13,9 +13,9 @@ Les deux participants doivent s’accorder sur les types des messages et leur or
 
 `sess` représente chaque action du protocole par un effet algébrique exécuté avec [kont](https://code.hybscloud.com/kont). Un rôle peut envoyer ou recevoir une valeur, choisir une branche ou suivre le choix de l’autre participant, et fermer son extrémité de la session.
 
-Utilisez **Cont** (`kont.Eff[A]`) pour confier les nouvelles tentatives au moteur d’exécution. `RecvBind` transmet la valeur reçue à une fonction qui renvoie la suite du protocole. `Run` exécute les deux rôles. Utilisez `Exec` pour un seul endpoint si l’autre s’exécute séparément.
+Utilisez **Cont** (`kont.Eff[A]`) pour composer un rôle avec des fonctions Go. `RecvBind` transmet la valeur reçue à une fonction qui renvoie la suite du protocole. `Run` exécute les deux rôles. Utilisez `Exec` pour un seul endpoint si l’autre s’exécute séparément.
 
-Utilisez **Expr** (`kont.Expr[A]`) si le pilote doit examiner les opérations ou décider quand les retenter, comme dans une boucle d’événements fondée sur `io_uring`. Les cadres de continuation conservent la suite du calcul. `Step` renvoie un résultat ou une suspension, et `Advance` tente l’opération suspendue sur l’endpoint. Si `Advance` renvoie `iox.ErrWouldBlock` lors d’une réception, conservez la même suspension et réessayez après l’envoi du message par l’autre participant.
+Utilisez **Expr** (`kont.Expr[A]`) pour représenter la suite du calcul par des cadres de continuation explicites. Un pilote, par exemple une boucle d’événements fondée sur `io_uring`, peut appeler `kont.Step(cont)` ou `sess.Step(expr)`. Les deux fonctions renvoient un résultat ou une suspension. Si une opération de session est en attente, passez sa suspension à `sess.Advance`. Si une réception renvoie `iox.ErrWouldBlock`, conservez la même suspension et réessayez après l’envoi du message par l’autre participant.
 
 Ces deux versions du même rôle reçoivent un `int`, exécutent `Close` localement et renvoient la valeur reçue. Associez le récepteur à un émetteur avec `Run` dans le monde Cont ou `RunExpr` dans le monde Expr.
 
@@ -179,7 +179,7 @@ Les constructeurs fusionnés tels que `ExprSendThen` créent des expressions à 
 | Récursion              | `Loop`                                                                           | `ExprLoop`                                                                                               |
 | Exécution              | `Exec`, `Run`                                                                    | `ExecExpr`, `RunExpr`                                                                                    |
 | Exécution avec erreurs | `ExecError`, `RunError`                                                          | `ExecErrorExpr`, `RunErrorExpr`                                                                          |
-| Pas à pas              |                                                                                  | `Step`, `Advance`, `StepError`, `AdvanceError`                                                           |
+| Pas à pas              | `kont.Step`, `Advance`                                                           | `Step`, `Advance`, `StepError`, `AdvanceError`                                                           |
 | Pont                   | `Reify` (Cont→Expr), `Reflect` (Expr→Cont)                                       |                                                                                                          |
 | Transport              | `New` → `(*Endpoint, *Endpoint)`                                                 |                                                                                                          |
 

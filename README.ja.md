@@ -13,9 +13,9 @@
 
 `sess` はプロトコルの各操作を [kont](https://code.hybscloud.com/kont) の代数的エフェクトとして表します。各ロールは値を送受信し、分岐を選んだり相手の選択に従ったりし、自分のエンドポイントを閉じることができます。
 
-再試行をランナーに任せる場合は、**Cont**（`kont.Eff[A]`）を使います。`RecvBind` は受信した値を関数に渡し、その関数がロールの残りのプロトコルを返します。`Run` は両方のロールを実行します。相手側が別に動作している場合は、`Exec` で片方のエンドポイントを実行します。
+Go の関数を組み合わせてロールを記述するには、**Cont**（`kont.Eff[A]`）を使います。`RecvBind` は受信した値を関数に渡し、その関数がロールの残りのプロトコルを返します。`Run` は両方のロールを実行します。相手側が別に動作している場合は、`Exec` で片方のエンドポイントを実行します。
 
-`io_uring` を使うイベントループなどで、ドライバが操作の内容を調べたり再試行のタイミングを決めたりする場合は、**Expr**（`kont.Expr[A]`）を使います。残りの処理は継続フレームが保持します。`Step` は結果またはサスペンションを返し、`Advance` は保留中の操作をエンドポイントで試みます。受信時に `Advance` が `iox.ErrWouldBlock` を返したら、同じサスペンションを保持し、相手が値を送信してから再試行します。
+残りの処理を明示的な継続フレームで表すには、**Expr**（`kont.Expr[A]`）を使います。`io_uring` のイベントループなどのドライバは `kont.Step(cont)` または `sess.Step(expr)` を呼び出せます。どちらも結果またはサスペンションを返します。セッション操作が保留中なら、そのサスペンションを `sess.Advance` に渡します。受信時に `iox.ErrWouldBlock` が返ったら、同じサスペンションを保持し、相手が値を送信してから再試行します。
 
 次の二つは同じ受信ロールです。どちらも `int` を受信し、自分の側で `Close` を実行してから受信値を返します。送信ロールと組み合わせて、Cont では `Run`、Expr では `RunExpr` で実行します。
 
@@ -179,7 +179,7 @@ fmt.Println(clientResult, serverResult)
 | 再帰 | `Loop` | `ExprLoop` |
 | 実行 | `Exec`, `Run` | `ExecExpr`, `RunExpr` |
 | エラー実行 | `ExecError`, `RunError` | `ExecErrorExpr`, `RunErrorExpr` |
-| ステッピング | | `Step`, `Advance`, `StepError`, `AdvanceError` |
+| ステッピング | `kont.Step`, `Advance` | `Step`, `Advance`, `StepError`, `AdvanceError` |
 | ブリッジ | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | トランスポート | `New` → `(*Endpoint, *Endpoint)` | |
 

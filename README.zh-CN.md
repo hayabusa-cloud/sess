@@ -13,9 +13,9 @@
 
 `sess` 通过 [kont](https://code.hybscloud.com/kont) 的代数效果表示协议的每一步。每个角色都可以发送或接收值，选择分支或遵循对端的选择，也可以关闭自己的端点。
 
-需要把重试交给运行器时，用 **Cont**（`kont.Eff[A]`）。`RecvBind` 把收到的值传给一个函数，由它返回该角色后续的协议。`Run` 驱动两个角色。如果对端单独运行，可以用 `Exec` 驱动本端。
+用 Go 函数组合一个角色的协议时，可以使用 **Cont**（`kont.Eff[A]`）。`RecvBind` 把收到的值传给一个函数，由它返回该角色后续的协议。`Run` 驱动两个角色。如果对端单独运行，可以用 `Exec` 驱动本端。
 
-当驱动程序需要查看操作或决定何时重试时，可以用 **Expr**（`kont.Expr[A]`），例如在基于 `io_uring` 的事件循环中。续延帧保存后续的计算。`Step` 返回结果或挂起句柄，`Advance` 在端点上尝试执行挂起的操作。如果接收时 `Advance` 返回 `iox.ErrWouldBlock`，就保留同一个挂起句柄，等对端发送数据后再重试。
+需要用显式续延帧表示后续计算时，可以使用 **Expr**（`kont.Expr[A]`）。基于 `io_uring` 的事件循环等驱动程序可以调用 `kont.Step(cont)` 或 `sess.Step(expr)`。两者都返回结果或挂起句柄。若有待执行的会话操作，就将其挂起句柄传给 `sess.Advance`。如果接收时返回 `iox.ErrWouldBlock`，就保留同一个句柄，等对端发送数据后再重试。
 
 下面是同一个接收角色的两种写法。两者都接收一个 `int`，在本端执行 `Close`，然后返回收到的值。将接收角色与发送角色配对后，Cont 用 `Run` 执行，Expr 用 `RunExpr` 执行。
 
@@ -179,7 +179,7 @@ fmt.Println(clientResult, serverResult)
 | 递归 | `Loop` | `ExprLoop` |
 | 执行 | `Exec`, `Run` | `ExecExpr`, `RunExpr` |
 | 错误执行 | `ExecError`, `RunError` | `ExecErrorExpr`, `RunErrorExpr` |
-| 步进 | | `Step`, `Advance`, `StepError`, `AdvanceError` |
+| 步进 | `kont.Step`, `Advance` | `Step`, `Advance`, `StepError`, `AdvanceError` |
 | 桥接 | `Reify` (Cont→Expr), `Reflect` (Expr→Cont) | |
 | 传输 | `New` → `(*Endpoint, *Endpoint)` | |
 
